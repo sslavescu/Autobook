@@ -20,10 +20,9 @@ class MemberRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def list_active_members(self) -> list[Member]:
-        rows = self.conn.execute(
-            "SELECT * FROM members WHERE status = 'active'"
-        ).fetchall()
+    def list_members(self) -> list[Member]:
+        # Only active members are imported, so the whole table is eligible.
+        rows = self.conn.execute("SELECT * FROM members").fetchall()
         return [self._to_member(row) for row in rows]
 
     def find_by_name(self, name: str, threshold: int) -> Optional[Member]:
@@ -34,7 +33,7 @@ class MemberRepository:
         to the admin instead of guessing who should receive the PIN.
         """
         by_name: dict[str, list[Member]] = {}
-        for member in self.list_active_members():
+        for member in self.list_members():
             by_name.setdefault(member.full_name, []).append(member)
         match = process.extractOne(name, list(by_name.keys()), score_cutoff=threshold)
         if not match:
@@ -60,8 +59,6 @@ class MemberRepository:
             member_id=row["member_id"],
             full_name=row["full_name"],
             email=row["email"],
-            status=row["status"],
-            pin=row["pin"],
             membership_expires_on=row["membership_expires_on"],
             padlock_pin=row["padlock_pin"],
             padlock_pin_valid_until=row["padlock_pin_valid_until"],

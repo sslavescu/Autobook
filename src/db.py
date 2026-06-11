@@ -16,12 +16,13 @@ def connect(db_path: str) -> sqlite3.Connection:
 def _create_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
+        -- GDPR data minimisation: only what the app needs. Address, date of
+        -- birth etc. are never stored; they only feed the one-way dedupe_hash
+        -- at import time. Only active members are imported.
         CREATE TABLE IF NOT EXISTS members (
             member_id   TEXT PRIMARY KEY,
             full_name   TEXT NOT NULL,
             email       TEXT NOT NULL,
-            status      TEXT NOT NULL DEFAULT 'active',
-            pin         TEXT,
             membership_expires_on TEXT,
             padlock_pin TEXT,
             padlock_pin_valid_until TEXT,
@@ -50,6 +51,10 @@ def _create_tables(conn: sqlite3.Connection) -> None:
     for statement in (
         "ALTER TABLE processed_emails ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE members ADD COLUMN dedupe_hash TEXT",
+        # GDPR minimisation: drop columns from databases created before they
+        # were removed from the schema.
+        "ALTER TABLE members DROP COLUMN status",
+        "ALTER TABLE members DROP COLUMN pin",
     ):
         try:
             conn.execute(statement)

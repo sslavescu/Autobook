@@ -20,8 +20,6 @@ class Member:
     member_id: str
     full_name: str
     email: str
-    status: str
-    pin: Optional[str] = None
     membership_expires_on: Optional[str] = None
     padlock_pin: Optional[str] = None
     padlock_pin_valid_until: Optional[str] = None

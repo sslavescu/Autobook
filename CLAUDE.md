@@ -81,7 +81,7 @@ Config is in `.env` (see `.env.example`). Secrets are local files under `secrets
 
 ### SQLite tables (in `data/pingen.db`)
 
-- **members** — key: `member_id`. Fields: `full_name`, `email`, `status`, `pin` (booking-system PIN), `padlock_pin`, `padlock_pin_valid_until`. There is only one padlock, so no lock id is stored per member.
+- **members** — key: `member_id`. Fields: `full_name`, `email`, `membership_expires_on`, `padlock_pin`, `padlock_pin_valid_until`, `dedupe_hash`. GDPR minimised: no status (only active members are imported; departed members are deleted on re-import), no address/DOB/booking-PIN (they feed the one-way `dedupe_hash` only). There is only one padlock, so no lock id is stored per member.
 - **processed_emails** — key: `message_hash`. Deduplicates processed Gmail messages.
 
 ## Tech stack

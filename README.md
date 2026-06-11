@@ -65,11 +65,14 @@ User ID,First Name,Last Name,PIN,Email Address,Active,Renewal Date
 1001,Ralph,McMahon,1001,ralph@example.com,1,31/12/2099
 ```
 
-It stores the fields needed by the app as `member_id`, `full_name`, `email`,
-`status`, `pin`, and `membership_expires_on`. The source CSV `PIN` column is
-retained as `pin` because it is the booking-system access PIN. Generated padlock
-PINs are stored separately on the member record as `padlock_pin` and
-`padlock_pin_valid_until`. Only the current padlock PIN is retained.
+GDPR data minimisation: only `member_id`, `full_name`, `email`, and
+`membership_expires_on` (used to cap PIN validity) are retained, plus a one-way
+`dedupe_hash` (SHA-256 of name/address/DOB/booking-PIN) used solely to tell
+apart distinct members sharing a name. Address, date of birth, the
+booking-system PIN, password and all other CSV columns are never stored. Only
+active members are imported; members absent from the next active export are
+deleted. Generated padlock PINs are stored on the member record as
+`padlock_pin` and `padlock_pin_valid_until`; only the current PIN is retained.
 
 Re-running the import upserts members without touching issued PINs. Use
 `--reset` to delete the database first and rebuild from scratch (wipes issued

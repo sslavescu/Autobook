@@ -21,8 +21,8 @@ def _in_memory_db():
 
 def _add_member(conn, member_id, full_name, dedupe_hash):
     conn.execute(
-        """INSERT INTO members (member_id, full_name, email, status, dedupe_hash)
-           VALUES (?, ?, ?, 'active', ?)""",
+        """INSERT INTO members (member_id, full_name, email, dedupe_hash)
+           VALUES (?, ?, ?, ?)""",
         (member_id, full_name, f"{member_id}@example.com", dedupe_hash),
     )
     conn.commit()

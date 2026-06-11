@@ -20,12 +20,11 @@ def value(row: dict, *field_names: str) -> str:
     return ""
 
 
-def status_from_row(row: dict) -> str:
+def is_active_row(row: dict) -> bool:
     status = value(row, "status")
     if status:
-        return status
-    active = value(row, "Active")
-    return "active" if active.lower() in TRUE_VALUES else "inactive"
+        return status.lower() == "active"
+    return value(row, "Active").lower() in TRUE_VALUES
 
 
 def full_name_from_row(row: dict) -> str:
@@ -50,13 +49,13 @@ def date_from_row(row: dict, *field_names: str) -> str:
 
 
 def optional_fields(row: dict) -> dict:
+    # GDPR minimisation: the renewal date is the only optional CSV field kept
+    # (it caps PIN validity). The booking-system PIN, address, date of birth
+    # etc. feed the one-way dedupe hash but are never stored.
     fields = {
-        "pin": value(row, "pin", "PIN"),
         "membership_expires_on": date_from_row(
             row, "membership_expires_on", "Renewal Date"
         ),
-        "padlock_pin": value(row, "padlock_pin"),
-        "padlock_pin_valid_until": value(row, "padlock_pin_valid_until"),
     }
     return {key: item for key, item in fields.items() if item}
 
@@ -86,11 +85,10 @@ def item_from_row(row: dict) -> dict:
         "member_id": value(row, "member_id", "User ID"),
         "full_name": full_name_from_row(row),
         "email": value(row, "email", "Email Address"),
-        "status": status_from_row(row),
     }
     item.update(optional_fields(row))
     item["dedupe_hash"] = dedupe_hash_from_row(
-        row, item["full_name"], item.get("pin", "")
+        row, item["full_name"], value(row, "pin", "PIN")
     )
     missing = [key for key in ("member_id", "full_name", "email") if not item[key]]
     if missing:
@@ -106,9 +104,9 @@ def save_member(conn, item: dict) -> None:
     fields, not just the four in the INSERT.
     """
     conn.execute(
-        """INSERT OR IGNORE INTO members (member_id, full_name, email, status)
-           VALUES (?, ?, ?, ?)""",
-        (item["member_id"], item["full_name"], item["email"], item["status"]),
+        """INSERT OR IGNORE INTO members (member_id, full_name, email)
+           VALUES (?, ?, ?)""",
+        (item["member_id"], item["full_name"], item["email"]),
     )
     fields = {k: v for k, v in item.items() if k != "member_id"}
     set_clause = ", ".join(f"{k} = ?" for k in fields)
@@ -142,11 +140,15 @@ def main():
         print(f"Deleted {args.db}, rebuilding from scratch")
 
     conn = connect(args.db)
-    imported = 0
+    imported_ids = []
     skipped = []
+    inactive = 0
     with open(args.csv, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            if not is_active_row(row):
+                inactive += 1
+                continue
             try:
                 item = item_from_row(row)
             except ValueError as exc:
@@ -156,12 +158,29 @@ def main():
                 print(f"Excluded ball machine account: {item['full_name']}")
                 continue
             save_member(conn, item)
-            imported += 1
+            imported_ids.append(item["member_id"])
             print(f"Imported {item['member_id']} {item['full_name']}")
+
+    removed = remove_members_not_in(conn, imported_ids)
 
     for reason in skipped:
         print(f"Skipped: {reason} (member cannot receive PINs; bookings will go to admin review)")
-    print(f"\nDone: {imported} imported, {len(skipped)} skipped")
+    print(
+        f"\nDone: {len(imported_ids)} imported, {inactive} inactive not stored, "
+        f"{len(skipped)} skipped, {removed} no-longer-active members removed"
+    )
+
+
+def remove_members_not_in(conn, imported_ids: list[str]) -> int:
+    """GDPR retention: delete members absent from the current active export."""
+    if not imported_ids:
+        return 0
+    existing = {r[0] for r in conn.execute("SELECT member_id FROM members")}
+    to_remove = existing - set(imported_ids)
+    for member_id in to_remove:
+        conn.execute("DELETE FROM members WHERE member_id = ?", (member_id,))
+    conn.commit()
+    return len(to_remove)
 
 
 if __name__ == "__main__":

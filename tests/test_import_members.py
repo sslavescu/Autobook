@@ -26,12 +26,11 @@ def test_item_from_exported_members_csv_row():
 
     dedupe_hash = item.pop("dedupe_hash")
     assert len(dedupe_hash) == 64
+    # GDPR minimisation: no status, booking PIN, address or DOB retained
     assert item == {
         "member_id": "1001",
         "full_name": "Ralph McMahon",
         "email": "ralph@example.com",
-        "status": "active",
-        "pin": "1001",
         "membership_expires_on": "2099-12-31",
     }
 
@@ -64,8 +63,6 @@ def test_save_member_inserts_new_member_with_all_fields():
             "member_id": "1001",
             "full_name": "Ralph McMahon",
             "email": "ralph@example.com",
-            "status": "active",
-            "pin": "1001",
             "membership_expires_on": "2099-12-31",
             "dedupe_hash": "abc123",
         },
@@ -74,8 +71,7 @@ def test_save_member_inserts_new_member_with_all_fields():
     assert row["full_name"] == "Ralph McMahon"
     assert row["padlock_pin"] is None
     # regression: new members must keep optional fields, not just the
-    # four columns in the INSERT
-    assert row["pin"] == "1001"
+    # columns in the INSERT
     assert row["membership_expires_on"] == "2099-12-31"
     assert row["dedupe_hash"] == "abc123"
 
@@ -83,8 +79,8 @@ def test_save_member_inserts_new_member_with_all_fields():
 def test_save_member_updates_without_overwriting_padlock_pin():
     conn = _in_memory_db()
     conn.execute(
-        """INSERT INTO members (member_id, full_name, email, status, padlock_pin)
-           VALUES ('1001', 'Ralph McMahon', 'old@example.com', 'active', '9999')"""
+        """INSERT INTO members (member_id, full_name, email, padlock_pin)
+           VALUES ('1001', 'Ralph McMahon', 'old@example.com', '9999')"""
     )
     conn.commit()
 
@@ -94,10 +90,26 @@ def test_save_member_updates_without_overwriting_padlock_pin():
             "member_id": "1001",
             "full_name": "Ralph McMahon",
             "email": "ralph@example.com",
-            "status": "active",
-            "pin": "1001",
         },
     )
     row = conn.execute("SELECT * FROM members WHERE member_id = '1001'").fetchone()
     assert row["email"] == "ralph@example.com"
     assert row["padlock_pin"] == "9999"
+
+
+def test_remove_members_not_in_current_export():
+    from scripts.import_members import remove_members_not_in
+
+    conn = _in_memory_db()
+    for member_id in ("1", "2", "3"):
+        conn.execute(
+            "INSERT INTO members (member_id, full_name, email) VALUES (?, 'X', 'x@y')",
+            (member_id,),
+        )
+    conn.commit()
+    removed = remove_members_not_in(conn, ["1", "3"])
+    assert removed == 1
+    remaining = {r[0] for r in conn.execute("SELECT member_id FROM members")}
+    assert remaining == {"1", "3"}
+    # an empty import never wipes the table
+    assert remove_members_not_in(conn, []) == 0
