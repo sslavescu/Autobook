@@ -1,0 +1,10 @@
+[Unit]
+Description=CIAC ball machine PIN generator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pingen
+ExecStart=/opt/pingen/.venv/bin/python run.py
+EnvironmentFile=/opt/pingen/.env

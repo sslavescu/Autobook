@@ -1,0 +1,12 @@
+Hi {first_name},
+
+Your ball machine padlock PIN is:
+
+{pin}
+
+It is valid until {expiry}.
+
+Please do not share this PIN. It is assigned to your membership account.
+
+Thanks,
+Sorin

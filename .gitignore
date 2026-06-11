@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.zip
+.env
+local.env
+.DS_Store
+secrets/
+data/
+.aws-sam/
+# Member data exports contain PII (and password hashes) — never commit any
+# CSV except the documented example format.
+*.csv
+!members.example.csv
+client_secret_*.json
