@@ -44,28 +44,14 @@ def _load_credentials(credentials_path: str) -> dict:
     return creds
 
 
-def align_to_days(
-    valid_from: datetime, valid_until: datetime, tz: ZoneInfo
-) -> tuple[datetime, datetime]:
-    """Expand a period to whole local days, as the daily algoPIN endpoint requires.
-
-    The start is floored to local midnight, the end ceiled to the next local
-    midnight, so the PIN covers the entire requested period.
-    """
-    start = valid_from.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
-    end = valid_until.astimezone(tz)
-    end_floor = end.replace(hour=0, minute=0, second=0, microsecond=0)
-    if end != end_floor:
-        end_floor += timedelta(days=1)
-    return start, end_floor
-
-
 def align_to_hours(
     valid_from: datetime, valid_until: datetime, tz: ZoneInfo
 ) -> tuple[datetime, datetime]:
-    """Expand a period to whole local hours, as the hourly algoPIN endpoint requires.
+    """Expand a period to whole local hours, as the algoPIN endpoints require.
 
-    The start is floored to the top of the hour, the end ceiled to the next.
+    The start is floored to the top of the hour (a 21:30 booking starts the PIN
+    at 21:00, a 21:00 booking at 21:00); the end is ceiled to the next hour so
+    the whole booking stays covered.
     """
     start = valid_from.astimezone(tz).replace(minute=0, second=0, microsecond=0)
     end = valid_until.astimezone(tz)
@@ -177,24 +163,31 @@ class IgloohomeClient:
                 buffered.isoformat(),
             )
             valid_from = buffered
-        # Daily algoPINs require whole days (29-367), hh:00:00 timestamps, and
-        # the same hour on start and end — midnight-to-midnight satisfies all.
-        # Shorter validity (e.g. capped by a membership renewal date) uses the
-        # hourly endpoint, which has no 29-day minimum.
-        start, end = align_to_days(valid_from, valid_until, self.tz)
+        # The PIN starts at the top of the hour at or before the booking start
+        # (21:30 -> 21:00, 21:00 -> 21:00), on the booking's own date. Both
+        # endpoints take hh:00:00 timestamps, so hour alignment suits both.
+        start, end = align_to_hours(valid_from, valid_until, self.tz)
+        if end <= start:
+            raise ValueError(f"algoPIN validity is empty: {start} -> {end}")
         duration_days = (end.date() - start.date()).days
         if duration_days > 367:
             raise ValueError(
                 f"algoPIN duration must be at most 367 days, got {duration_days} "
                 "(check PIN_VALID_DAYS)"
             )
+        kind = "hourly"
         if duration_days >= 29:
-            kind = "daily"
-        else:
-            kind = "hourly"
-            start, end = align_to_hours(valid_from, valid_until, self.tz)
-            if end <= start:
-                raise ValueError(f"algoPIN validity is empty: {start} -> {end}")
+            # The daily endpoint needs 29-367 days AND the same hour on start
+            # and end. Move the end onto the start's hour, never later than the
+            # requested end (so a renewal-date cap is still respected).
+            daily_end = end.replace(
+                hour=start.hour, minute=0, second=0, microsecond=0
+            )
+            if daily_end > end:
+                daily_end -= timedelta(days=1)
+            if (daily_end.date() - start.date()).days >= 29:
+                kind = "daily"
+                end = daily_end
         payload = {
             "variance": variance,
             "startDate": start.isoformat(),

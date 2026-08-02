@@ -116,29 +116,38 @@ def test_parse_period_no_marker_is_ambiguous():
     assert end is None
 
 
-def test_align_to_days():
-    from datetime import datetime, timezone
+def test_align_to_hours_floors_start_to_the_hour():
+    from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from src.igloohome_client import align_to_days
+    from src.igloohome_client import align_to_hours
 
     tz = ZoneInfo("Europe/Dublin")
-    # 11 June 14:30 UTC = 15:30 Dublin; +31 days ends mid-day so it rounds up
-    start, end = align_to_days(
-        datetime(2026, 6, 11, 14, 30, tzinfo=timezone.utc),
-        datetime(2026, 7, 12, 14, 30, tzinfo=timezone.utc),
-        tz,
-    )
-    assert start.isoformat() == "2026-06-11T00:00:00+01:00"
-    assert end.isoformat() == "2026-07-13T00:00:00+01:00"
 
-    # an end already at local midnight is not rounded further
-    _, end = align_to_days(
-        datetime(2026, 6, 11, 14, 30, tzinfo=timezone.utc),
-        datetime(2026, 7, 11, 23, 0, tzinfo=timezone.utc),  # 00:00 Dublin on 12th
+    # 21:30 booking -> PIN starts 21:00 on the same date
+    start, end = align_to_hours(
+        datetime(2026, 8, 22, 21, 30, tzinfo=tz),
+        datetime(2026, 9, 1, 0, 0, tzinfo=tz),
         tz,
     )
-    assert end.isoformat() == "2026-07-12T00:00:00+01:00"
+    assert start.isoformat() == "2026-08-22T21:00:00+01:00"
+    assert end.isoformat() == "2026-09-01T00:00:00+01:00"
+
+    # 21:00 booking -> PIN starts 21:00 (already on the hour, not moved back)
+    start, _ = align_to_hours(
+        datetime(2026, 8, 22, 21, 0, tzinfo=tz),
+        datetime(2026, 9, 1, 0, 0, tzinfo=tz),
+        tz,
+    )
+    assert start.isoformat() == "2026-08-22T21:00:00+01:00"
+
+    # a mid-hour end is ceiled so the booking stays covered
+    _, end = align_to_hours(
+        datetime(2026, 8, 22, 21, 0, tzinfo=tz),
+        datetime(2026, 8, 22, 22, 30, tzinfo=tz),
+        tz,
+    )
+    assert end.isoformat() == "2026-08-22T23:00:00+01:00"
 
 
 def test_member_pin_email_renders_template():

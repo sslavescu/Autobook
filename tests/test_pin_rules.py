@@ -228,13 +228,15 @@ def test_algopin_endpoint_selection(monkeypatch, tmp_path):
 
     monkeypatch.setattr(client, "_request", fake_request)
 
-    # 30 days -> daily endpoint, midnight-aligned
+    # 30 days -> daily endpoint; start is hour-aligned and the end carries the
+    # same hour, as the daily endpoint requires.
     client.create_monthly_algopin(
         "dev", "Member", NOW, NOW + timedelta(days=30), now=NOW
     )
     path, payload = calls[-1]
     assert path.endswith("/algopin/daily")
-    assert payload["startDate"] == "2026-06-11T00:00:00+01:00"
+    assert payload["startDate"] == "2026-06-11T13:00:00+01:00"
+    assert payload["endDate"] == "2026-07-11T13:00:00+01:00"
 
     # 8 days (renewal-capped) -> hourly endpoint, hour-aligned
     client.create_monthly_algopin(
@@ -244,6 +246,37 @@ def test_algopin_endpoint_selection(monkeypatch, tmp_path):
     assert path.endswith("/algopin/hourly")
     assert payload["startDate"] == "2026-06-11T13:00:00+01:00"  # 12:00 UTC floored
     assert payload["endDate"] == "2026-06-19T13:00:00+01:00"
+
+
+def test_algopin_starts_at_top_of_hour_before_booking(monkeypatch, tmp_path):
+    """21:30 booking -> PIN starts 21:00 same day; 21:00 booking -> 21:00."""
+    import json
+
+    from src.igloohome_client import IgloohomeClient
+
+    creds = tmp_path / "creds.json"
+    creds.write_text(json.dumps({"client_id": "id", "client_secret": "secret"}))
+    client = IgloohomeClient(
+        base_url="http://unused", credentials_path=str(creds),
+        timezone_name="Europe/Dublin",
+    )
+    calls = []
+    monkeypatch.setattr(
+        client, "_request", lambda m, p, **k: calls.append((p, k["json"])) or {"pin": "1"}
+    )
+
+    month_end = _local(2026, 9, 1)
+    for booking_start, expected in (
+        (_local(2026, 8, 22, 21, 30), "2026-08-22T21:00:00+01:00"),
+        (_local(2026, 8, 22, 21, 0), "2026-08-22T21:00:00+01:00"),
+        (_local(2026, 8, 22, 9, 0), "2026-08-22T09:00:00+01:00"),
+        (_local(2026, 8, 22, 6, 45), "2026-08-22T06:00:00+01:00"),
+    ):
+        client.create_monthly_algopin(
+            "dev", "Member", booking_start, month_end, now=_local(2026, 8, 1)
+        )
+        _, payload = calls[-1]
+        assert payload["startDate"] == expected
 
 
 def test_algopin_past_start_clamped_to_now(monkeypatch, tmp_path):
@@ -269,5 +302,6 @@ def test_algopin_past_start_clamped_to_now(monkeypatch, tmp_path):
         "dev", "Member", past_start, NOW + timedelta(days=30), now=NOW
     )
     _, payload = calls[-1]
-    # Start aligns to NOW's day (11 June), not the past start's day (4 June).
-    assert payload["startDate"] == "2026-06-11T00:00:00+01:00"
+    # Start is NOW + buffer floored to the hour (13:10 -> 13:00 Dublin),
+    # not the past start's date (4 June).
+    assert payload["startDate"] == "2026-06-11T13:00:00+01:00"
