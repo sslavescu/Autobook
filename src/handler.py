@@ -131,6 +131,29 @@ def process_message(
         )
         return "manual_review_member_not_found", booking, None
 
+    # A chargeable booking is the proof this is a real ball-machine reservation.
+    # No cost line at all means the email format changed, so escalate rather
+    # than silently stop issuing PINs.
+    if booking.cost is None:
+        gmail.send_email(
+            to=cfg.admin_email,
+            subject="Ball machine booking - no cost found in email",
+            body=(
+                f"No booking cost could be read from the confirmation for "
+                f"{booking.requester_name} ({booking.booking_period}).\n"
+                f"Message hash: {message_hash}\n"
+                "The email format may have changed - check the parser."
+            ),
+        )
+        return "manual_review_cost_missing", booking, member
+    if booking.cost == 0:
+        logger.info(
+            "%s: booking for %s has zero cost; no PIN issued",
+            message_hash[:12],
+            booking.requester_name,
+        )
+        return "skipped_zero_cost", booking, member
+
     now = datetime.now(timezone.utc)
     tz = ZoneInfo(cfg.club_timezone)
     period_start, period_end = booking_period(booking, now, tz)

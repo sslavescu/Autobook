@@ -17,16 +17,18 @@ def _local(y, mo, d, h=0, mi=0):
     return datetime(y, mo, d, h, mi, tzinfo=TZ)
 
 
-def _future_booking_message(message_id="m1", days_ahead=30):
+def _future_booking_message(message_id="m1", days_ahead=30, cost="5.00"):
     """A ball-machine booking email dated in the future, so the PIN window is valid."""
     import base64
     from datetime import timedelta
 
     when = datetime.now(TZ) + timedelta(days=days_ahead)
     date_line = f"9:00 - 10:00 am , {when:%A} {when.day} {when:%B} {when.year}"
-    body = base64.urlsafe_b64encode(
-        f"Date: {date_line}\nPlayer 1: Dave Dennehy\nPlayer 2: Ball Machine\n".encode()
-    ).decode().rstrip("=")
+    text = (
+        f"Date: {date_line}\nPlayer 1: Dave Dennehy\nPlayer 2: Ball Machine\n"
+        f"Cost of Booking: €{cost}\n"
+    )
+    body = base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
     return {
         "id": message_id, "threadId": "t1",
         "payload": {
@@ -201,6 +203,64 @@ def test_stored_dry_run_pin_is_replaced_on_real_run():
     assert stored["padlock_pin"] == "987654321"
     assert DRY_RUN_PIN not in sent[-1]["body"]
     assert "987654321" in sent[-1]["body"]
+
+
+def _cost_case_status(msg):
+    """Run process_message with a matching member; igloohome must not be called."""
+    from types import SimpleNamespace
+
+    from src.handler import process_message
+    from src.member_repo import MemberRepository
+
+    conn = _in_memory_db()
+    conn.execute(
+        """INSERT INTO members (member_id, full_name, email, membership_expires_on,
+                                dedupe_hash)
+           VALUES ('1', 'Dave Dennehy', 'dave@example.com', '2099-12-31', 'h')"""
+    )
+    conn.commit()
+    cfg = SimpleNamespace(
+        admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
+        club_timezone="Europe/Dublin", dry_run=False,
+    )
+    sent = []
+    gmail = SimpleNamespace(
+        send_email=lambda **kw: sent.append(kw), mark_read=lambda *a, **k: None
+    )
+
+    def must_not_call(**kwargs):
+        raise AssertionError("no PIN may be generated for this booking")
+
+    igloo = SimpleNamespace(create_monthly_algopin=must_not_call)
+    status, _, _ = process_message(cfg, gmail, igloo, MemberRepository(conn), msg, conn)
+    return status, sent, conn
+
+
+def test_zero_cost_booking_gets_no_pin():
+    status, sent, conn = _cost_case_status(_future_booking_message(cost="0.00"))
+    assert status == "skipped_zero_cost"
+    assert sent == []  # silent: a free booking is not an error
+    stored = conn.execute("SELECT padlock_pin FROM members WHERE member_id='1'").fetchone()
+    assert stored["padlock_pin"] is None
+
+
+def test_missing_cost_line_escalates_to_admin():
+    msg = _future_booking_message()
+    # strip the cost line to simulate a changed email format
+    import base64
+
+    payload = msg["payload"]["body"]["data"]
+    text = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode()
+    stripped = "\n".join(
+        line for line in text.splitlines() if "Cost of Booking" not in line
+    )
+    msg["payload"]["body"]["data"] = (
+        base64.urlsafe_b64encode(stripped.encode()).decode().rstrip("=")
+    )
+
+    status, sent, _ = _cost_case_status(msg)
+    assert status == "manual_review_cost_missing"
+    assert sent and sent[-1]["to"] == "admin@x"
 
 
 def test_next_variance_cycles():

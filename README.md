@@ -110,7 +110,10 @@ This is to confirm your court booking at CIAC as follows:
 
 A booking is treated as a ball-machine booking when any of `Player 1`–`Player 4`
 is `Ball Machine` (or the older account name `Ball M`). The PIN is issued to
-`Player 1`. The `Date:` line is parsed into `booking_start`/`booking_end`
+`Player 1`. The email must also contain a `Cost of Booking:` line with a
+non-zero amount — a free booking is not chargeable and gets no PIN
+(status `skipped_zero_cost`). If the line is missing entirely the admin is
+alerted, since that suggests the email format changed. The `Date:` line is parsed into `booking_start`/`booking_end`
 (am/pm inferred for ranges like `11:30 - 1:00 pm`). Cancellation emails use the
 subject `Court Cancellation Confirmation` and are excluded by the subject
 filter. Booking confirmations without a ball-machine player are skipped

@@ -35,6 +35,14 @@ BALL_MACHINE_PLAYER_PATTERN = re.compile(
 PLAYER1_PATTERN = re.compile(r"^\s*Player\s*1\s*:[ \t]*(?P<name>\S[^\r\n]*)", re.I | re.M)
 DATE_LINE_PATTERN = re.compile(r"^\s*Date\s*:[ \t]*(?P<period>\S[^\r\n]*)", re.I | re.M)
 
+# "Cost of Booking: €5.00" — a booking that cost nothing is not a chargeable
+# ball-machine booking, so it gets no PIN. Only this line counts; the separate
+# "debited by" and "current balance" lines are ignored.
+COST_PATTERN = re.compile(
+    r"Cost\s+of\s+Booking\s*:?\s*[€£$]?\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?)",
+    re.I,
+)
+
 # "9:00 - 10:00 am , Saturday 13th June 2026" — the am/pm marker may appear
 # after either time or only after the end time; the end time may be absent.
 PERIOD_PATTERN = re.compile(
@@ -117,7 +125,19 @@ def parse_booking(message: dict) -> Optional[Booking]:
         booking_period=booking_period,
         booking_start=booking_start,
         booking_end=booking_end,
+        cost=extract_cost(body),
     )
+
+
+def extract_cost(text: str) -> Optional[float]:
+    """The booking cost from the confirmation email, or None if not stated."""
+    match = COST_PATTERN.search(text)
+    if not match:
+        return None
+    try:
+        return float(match.group("amount").replace(",", ""))
+    except ValueError:
+        return None
 
 
 def hash_message_id(message_id: str) -> str:

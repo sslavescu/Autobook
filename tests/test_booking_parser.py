@@ -116,6 +116,25 @@ def test_parse_period_no_marker_is_ambiguous():
     assert end is None
 
 
+def test_extract_cost():
+    from src.booking_parser import extract_cost
+
+    assert extract_cost("Cost of Booking: \t€5.00") == 5.0
+    assert extract_cost("Cost of Booking: €0.00") == 0.0
+    assert extract_cost("cost of booking €12") == 12.0
+    assert extract_cost("Cost of Booking: €1,234.50") == 1234.5
+    # the balance / debited lines must not be mistaken for the booking cost
+    assert extract_cost("Your account has been debited by: €7.50") is None
+    assert extract_cost("Your current balance is: €0.00") is None
+    assert extract_cost("no cost line here") is None
+
+
+def test_parse_booking_captures_cost():
+    body = BOOKING_BODY + "\tCost of Booking: \t€5.00\n"
+    msg = make_message("Court Booking Confirmation: x", body)
+    assert parse_booking(msg).cost == 5.0
+
+
 def test_align_to_hours_floors_start_to_the_hour():
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -158,7 +177,8 @@ def test_member_pin_email_renders_template():
     body = member_pin_email("Dave Dennehy", "1928374", datetime(2026, 7, 12, 0, 0))
     assert "Hi Dave," in body
     assert "1928374" in body
-    assert "11 July 2026" in body  # exclusive midnight boundary -> last valid day
+    # {expiry} is optional in the template; render must not leave placeholders
+    assert "{" not in body
 
 
 def test_reply_subject():

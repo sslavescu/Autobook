@@ -13,6 +13,7 @@ class Booking:
     booking_period: Optional[str] = None
     booking_start: Optional[str] = None
     booking_end: Optional[str] = None
+    cost: Optional[float] = None
 
 
 @dataclass(frozen=True)
