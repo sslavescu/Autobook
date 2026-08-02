@@ -5,6 +5,15 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+User=pingen
+Group=pingen
 WorkingDirectory=/opt/pingen
 ExecStart=/opt/pingen/.venv/bin/python run.py
 EnvironmentFile=/opt/pingen/.env
+
+# Hardening: the app only needs its own directory and outbound network.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pingen/data /opt/pingen/secrets

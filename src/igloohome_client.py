@@ -1,7 +1,7 @@
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -11,6 +11,37 @@ from .models import GeneratedPin
 logger = logging.getLogger(__name__)
 
 DEFAULT_AUTH_URL = "https://auth.igloohome.co/oauth2/token"
+
+# Buffer added when clamping a past start to now, so the PIN start is not
+# already stale by the time igloohome processes the request.
+START_BUFFER_MINUTES = 10
+
+
+def _load_credentials(credentials_path: str) -> dict:
+    """Read the igloohome credentials JSON.
+
+    Tolerates full-line `//` comments (e.g. an old credential block left in for
+    reference) since the file is hand-edited, and raises a clear error rather
+    than a raw JSONDecodeError when it can't be parsed.
+    """
+    with open(credentials_path) as f:
+        text = "".join(
+            line for line in f if not line.lstrip().startswith("//")
+        )
+    try:
+        creds = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{credentials_path} is not valid JSON: {exc}. Expected "
+            '{"client_id": "...", "client_secret": "..."} '
+            "(only full-line // comments are allowed)."
+        ) from exc
+    missing = [k for k in ("client_id", "client_secret") if not creds.get(k)]
+    if missing:
+        raise ValueError(
+            f"{credentials_path} is missing required field(s): {', '.join(missing)}"
+        )
+    return creds
 
 
 def align_to_days(
@@ -59,8 +90,7 @@ class IgloohomeClient:
         auth_url: str = DEFAULT_AUTH_URL,
         timezone_name: str = "Europe/Dublin",
     ):
-        with open(credentials_path) as f:
-            creds = json.load(f)
+        creds = _load_credentials(credentials_path)
         self.client_id = creds["client_id"]
         self.client_secret = creds["client_secret"]
         self.base_url = base_url.rstrip("/")
@@ -121,9 +151,24 @@ class IgloohomeClient:
         valid_from: datetime,
         valid_until: datetime,
         variance: int = 1,
+        now: datetime | None = None,
     ) -> GeneratedPin:
         if variance not in (1, 2, 3):
             raise ValueError(f"variance must be 1, 2 or 3, got {variance}")
+        # Never start a PIN in the past: a booking whose start has already
+        # passed should not produce an algoPIN dated earlier than now. Clamp the
+        # start to now + a small buffer (so it is not already stale by the time
+        # the API processes it) before aligning to the day/hour boundary.
+        now = now or datetime.now(timezone.utc)
+        if valid_from < now:
+            buffered = now + timedelta(minutes=START_BUFFER_MINUTES)
+            logger.info(
+                "algoPIN start %s is in the past; using now + %d min (%s) instead",
+                valid_from.isoformat(),
+                START_BUFFER_MINUTES,
+                buffered.isoformat(),
+            )
+            valid_from = buffered
         # Daily algoPINs require whole days (29-367), hh:00:00 timestamps, and
         # the same hour on start and end — midnight-to-midnight satisfies all.
         # Shorter validity (e.g. capped by a membership renewal date) uses the

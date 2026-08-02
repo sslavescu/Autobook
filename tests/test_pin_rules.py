@@ -5,11 +5,16 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from src.db import _create_tables, next_variance
-from src.handler import pin_validity_end
+from src.handler import booking_period, pin_validity_end
 from src.member_repo import AmbiguousMemberError, MemberRepository
+from src.models import Booking, Member
 
 TZ = ZoneInfo("Europe/Dublin")
 NOW = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
+
+
+def _local(y, mo, d, h=0, mi=0):
+    return datetime(y, mo, d, h, mi, tzinfo=TZ)
 
 
 def _in_memory_db():
@@ -28,23 +33,54 @@ def _add_member(conn, member_id, full_name, dedupe_hash):
     conn.commit()
 
 
-def test_pin_validity_end_uncapped():
-    end = pin_validity_end(NOW, 31, "2099-12-31", TZ)
-    assert end == NOW.replace(month=7, day=12)
+def test_pin_validity_end_is_end_of_booking_month():
+    # booking on 13 June -> PIN valid until 1 July midnight (covers all of June)
+    end = pin_validity_end(_local(2026, 6, 13, 9), "2099-12-31", TZ)
+    assert end.isoformat() == "2026-07-01T00:00:00+01:00"
+
+
+def test_pin_validity_end_uses_bookings_own_month():
+    # a booking in July -> end of July, even if run in June
+    end = pin_validity_end(_local(2026, 7, 2, 10), "2099-12-31", TZ)
+    assert end.isoformat() == "2026-08-01T00:00:00+01:00"
 
 
 def test_pin_validity_end_capped_by_renewal():
-    end = pin_validity_end(NOW, 31, "2026-07-10", TZ)
-    assert end.isoformat() == "2026-07-10T00:00:00+01:00"
-
-
-def test_pin_validity_end_renewal_soon_gives_short_pin():
-    end = pin_validity_end(NOW, 31, "2026-06-20", TZ)
+    end = pin_validity_end(_local(2026, 6, 13, 9), "2026-06-20", TZ)
     assert end.isoformat() == "2026-06-20T00:00:00+01:00"
 
 
-def test_pin_validity_end_lapsed_membership():
-    assert pin_validity_end(NOW, 31, "2026-01-01", TZ) is None
+def test_booking_period_from_parsed_times():
+    booking = Booking(
+        message_hash="h", thread_id="t", requester_name="X", raw_subject="s",
+        booking_start="2026-06-13T09:00:00", booking_end="2026-06-13T10:00:00",
+    )
+    start, end = booking_period(booking, NOW, TZ)
+    assert start == _local(2026, 6, 13, 9)
+    assert end == _local(2026, 6, 13, 10)
+
+
+def test_booking_period_falls_back_to_now_when_unparsed():
+    booking = Booking(
+        message_hash="h", thread_id="t", requester_name="X", raw_subject="s",
+    )
+    start, end = booking_period(booking, NOW, TZ)
+    assert start == NOW and end == NOW
+
+
+def test_padlock_pin_covers_period():
+    member = Member(
+        member_id="1", full_name="X", email="x@y",
+        padlock_pin="123456",
+        padlock_pin_valid_from="2026-06-01T00:00:00+01:00",
+        padlock_pin_valid_until="2026-07-01T00:00:00+01:00",
+    )
+    # booking inside the window -> covered
+    assert member.padlock_pin_covers(_local(2026, 6, 13, 9), _local(2026, 6, 13, 10))
+    # booking after the window -> not covered (new PIN needed)
+    assert not member.padlock_pin_covers(_local(2026, 7, 2, 9), _local(2026, 7, 2, 10))
+    # booking before the PIN starts -> not covered
+    assert not member.padlock_pin_covers(_local(2026, 5, 30, 9), _local(2026, 5, 30, 10))
 
 
 def test_find_by_name_duplicate_names_distinct_people():
@@ -89,14 +125,45 @@ def test_algopin_endpoint_selection(monkeypatch, tmp_path):
     monkeypatch.setattr(client, "_request", fake_request)
 
     # 30 days -> daily endpoint, midnight-aligned
-    client.create_monthly_algopin("dev", "Member", NOW, NOW + timedelta(days=30))
+    client.create_monthly_algopin(
+        "dev", "Member", NOW, NOW + timedelta(days=30), now=NOW
+    )
     path, payload = calls[-1]
     assert path.endswith("/algopin/daily")
     assert payload["startDate"] == "2026-06-11T00:00:00+01:00"
 
     # 8 days (renewal-capped) -> hourly endpoint, hour-aligned
-    client.create_monthly_algopin("dev", "Member", NOW, NOW + timedelta(days=8))
+    client.create_monthly_algopin(
+        "dev", "Member", NOW, NOW + timedelta(days=8), now=NOW
+    )
     path, payload = calls[-1]
     assert path.endswith("/algopin/hourly")
     assert payload["startDate"] == "2026-06-11T13:00:00+01:00"  # 12:00 UTC floored
     assert payload["endDate"] == "2026-06-19T13:00:00+01:00"
+
+
+def test_algopin_past_start_clamped_to_now(monkeypatch, tmp_path):
+    import json
+    from datetime import timedelta
+
+    from src.igloohome_client import IgloohomeClient
+
+    creds = tmp_path / "creds.json"
+    creds.write_text(json.dumps({"client_id": "id", "client_secret": "secret"}))
+    client = IgloohomeClient(
+        base_url="http://unused", credentials_path=str(creds),
+        timezone_name="Europe/Dublin",
+    )
+    calls = []
+    monkeypatch.setattr(
+        client, "_request", lambda m, p, **k: calls.append((p, k["json"])) or {"pin": "1"}
+    )
+
+    # Booking start a week in the past, end still well in the future.
+    past_start = NOW - timedelta(days=7)
+    client.create_monthly_algopin(
+        "dev", "Member", past_start, NOW + timedelta(days=30), now=NOW
+    )
+    _, payload = calls[-1]
+    # Start aligns to NOW's day (11 June), not the past start's day (4 June).
+    assert payload["startDate"] == "2026-06-11T00:00:00+01:00"

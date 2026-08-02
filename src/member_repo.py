@@ -44,12 +44,16 @@ class MemberRepository:
             raise AmbiguousMemberError(match[0], len(candidates))
         return candidates[0]
 
-    def save_padlock_pin(self, member_id: str, pin: str, valid_until: datetime) -> None:
+    def save_padlock_pin(
+        self, member_id: str, pin: str, valid_from: datetime, valid_until: datetime
+    ) -> None:
         self.conn.execute(
             """UPDATE members
-               SET padlock_pin = ?, padlock_pin_valid_until = ?
+               SET padlock_pin = ?,
+                   padlock_pin_valid_from = ?,
+                   padlock_pin_valid_until = ?
                WHERE member_id = ?""",
-            (pin, valid_until.isoformat(), member_id),
+            (pin, valid_from.isoformat(), valid_until.isoformat(), member_id),
         )
         self.conn.commit()
 
@@ -61,6 +65,7 @@ class MemberRepository:
             email=row["email"],
             membership_expires_on=row["membership_expires_on"],
             padlock_pin=row["padlock_pin"],
+            padlock_pin_valid_from=row["padlock_pin_valid_from"],
             padlock_pin_valid_until=row["padlock_pin_valid_until"],
             dedupe_hash=row["dedupe_hash"],
         )

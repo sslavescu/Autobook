@@ -65,8 +65,8 @@ Config is in `.env` (see `.env.example`). Secrets are local files under `secrets
 ### Key design decisions
 
 - **No full email storage**: only a SHA-256 hash of the Gmail message ID is persisted in `processed_emails`, along with extracted booking metadata.
-- **PIN reuse**: if a member already has a valid `padlock_pin`, it is reused rather than generating a new one.
-- **PIN validity**: earliest of `PIN_VALID_DAYS` or the member's renewal date. 29+ days → daily algoPIN endpoint (midnight-aligned); under 29 days → hourly endpoint (hour-aligned). Lapsed membership → no PIN, admin alert. Variance cycles 1→2→3 (stored in `app_state`).
+- **PIN reuse**: a stored `padlock_pin` is reused only if it *covers* the booking's parsed `[start, end]` period (`Member.padlock_pin_covers`); otherwise a new PIN is generated. Both `padlock_pin_valid_from` and `padlock_pin_valid_until` are stored because a PIN can start in the future (at the booking time).
+- **New PIN validity**: from the booking's start time to the end of the booking's calendar month, capped at the member's renewal date. A past booking start is clamped to now + `START_BUFFER_MINUTES` by the igloohome client. Duration 29+ days → daily algoPIN endpoint (midnight-aligned); under 29 days → hourly endpoint (hour-aligned). If the renewal date can't cover the booking → no PIN, admin alert. Variance cycles 1→2→3 (stored in `app_state`).
 - **Duplicate names**: members get a `dedupe_hash` (name/address/DOB/booking-PIN) at import; if a booked name matches several distinct members, the booking goes to admin review instead of guessing.
 - **Fuzzy matching**: `member_repo.py` scans all active members and uses `rapidfuzz.process.extractOne` with a configurable `FUZZY_NAME_THRESHOLD` (default 90).
 - **DRY_RUN mode**: set `DRY_RUN=true` env var to skip igloohome API calls and use a placeholder PIN.

@@ -25,6 +25,7 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             email       TEXT NOT NULL,
             membership_expires_on TEXT,
             padlock_pin TEXT,
+            padlock_pin_valid_from TEXT,
             padlock_pin_valid_until TEXT,
             dedupe_hash TEXT
         );
@@ -51,6 +52,7 @@ def _create_tables(conn: sqlite3.Connection) -> None:
     for statement in (
         "ALTER TABLE processed_emails ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE members ADD COLUMN dedupe_hash TEXT",
+        "ALTER TABLE members ADD COLUMN padlock_pin_valid_from TEXT",
         # GDPR minimisation: drop columns from databases created before they
         # were removed from the schema.
         "ALTER TABLE members DROP COLUMN status",

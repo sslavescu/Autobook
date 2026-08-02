@@ -3,6 +3,7 @@ import logging
 from email.mime.text import MIMEText
 from pathlib import Path
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -20,9 +21,11 @@ SCOPES = [
 def load_gmail_credentials(credentials_path: str, token_path: str) -> Credentials:
     """Load or create Gmail OAuth credentials.
 
-    On first run (no token file), launches the OAuth consent flow in console
-    mode so it works on headless machines.  On subsequent runs, silently
-    refreshes the access token using the stored refresh token.
+    On first run (no token file), launches the OAuth consent flow so it works on
+    headless machines. On subsequent runs, silently refreshes the access token
+    using the stored refresh token. If the refresh token itself is no longer
+    valid (revoked, or expired after 7 days while the OAuth app is in "Testing"),
+    falls back to a fresh consent flow rather than failing.
     """
     token_file = Path(token_path)
     creds = None
@@ -34,9 +37,17 @@ def load_gmail_credentials(credentials_path: str, token_path: str) -> Credential
         return creds
 
     if creds and creds.expired and creds.refresh_token:
-        logger.info("Refreshing expired Gmail access token")
-        creds.refresh(Request())
-    else:
+        try:
+            logger.info("Refreshing expired Gmail access token")
+            creds.refresh(Request())
+        except RefreshError:
+            logger.warning(
+                "Gmail refresh token is no longer valid (revoked or expired); "
+                "starting a new OAuth consent flow"
+            )
+            creds = None
+
+    if not creds or not creds.valid:
         logger.info("No valid token found — starting OAuth consent flow")
         flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
         # run_console() was removed from google-auth-oauthlib 1.0 (Google shut

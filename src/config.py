@@ -17,7 +17,6 @@ class Config:
     lock_id: str
     booking_sender_filter: str
     booking_subject_filter: str
-    pin_valid_days: int
     fuzzy_name_threshold: int
     max_process_attempts: int
     admin_email: str
@@ -56,7 +55,6 @@ def load_config(env_path: str | None = None) -> Config:
         booking_subject_filter=os.getenv(
             "BOOKING_SUBJECT_FILTER", "Court Booking Confirmation"
         ),
-        pin_valid_days=int(os.getenv("PIN_VALID_DAYS", "31")),
         fuzzy_name_threshold=int(os.getenv("FUZZY_NAME_THRESHOLD", "90")),
         max_process_attempts=int(os.getenv("MAX_PROCESS_ATTEMPTS", "3")),
         admin_email=os.environ["ADMIN_EMAIL"],

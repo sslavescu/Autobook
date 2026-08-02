@@ -9,7 +9,7 @@ from .booking_parser import hash_message_id, is_ball_machine_booking, parse_book
 from .config import Config, load_config
 from .db import connect, next_variance
 from .gmail_client import GmailClient, load_gmail_credentials
-from .igloohome_client import IgloohomeClient
+from .igloohome_client import START_BUFFER_MINUTES, IgloohomeClient
 from .member_repo import AmbiguousMemberError, MemberRepository
 from .models import Booking, Member
 from .processed_repo import ProcessedEmailRepository
@@ -128,41 +128,56 @@ def process_message(
 
     now = datetime.now(timezone.utc)
     tz = ZoneInfo(cfg.club_timezone)
-    if member.has_valid_padlock_pin(now):
+    period_start, period_end = booking_period(booking, now, tz)
+
+    if member.padlock_pin_covers(period_start, period_end):
         pin = member.padlock_pin
+        valid_from = datetime.fromisoformat(
+            member.padlock_pin_valid_from.replace("Z", "+00:00")
+        )
         valid_until = datetime.fromisoformat(
             member.padlock_pin_valid_until.replace("Z", "+00:00")
         )
     else:
-        valid_until = pin_validity_end(
-            now, cfg.pin_valid_days, member.membership_expires_on, tz
+        # New PIN runs from the booking start to the end of the booking's month,
+        # never past the membership renewal date. The igloohome client clamps a
+        # past start to now + a buffer.
+        valid_from = period_start
+        valid_until = pin_validity_end(period_end, member.membership_expires_on, tz)
+        effective_start = (
+            period_start
+            if period_start >= now
+            else now + timedelta(minutes=START_BUFFER_MINUTES)
         )
-        if valid_until is None:
+        if valid_until <= effective_start or valid_until < period_end:
             gmail.send_email(
                 to=cfg.admin_email,
-                subject="Ball machine booking - membership lapsed",
+                subject="Ball machine booking - membership expires before booking",
                 body=(
                     f"{member.full_name} (member {member.member_id}) booked the ball "
-                    f"machine but their membership renewal date "
-                    f"({member.membership_expires_on}) has passed. "
-                    "No PIN was issued; handle manually or ask them to renew."
+                    f"machine for {booking.booking_period}, but their membership "
+                    f"renewal date ({member.membership_expires_on}) is too soon to "
+                    "issue a PIN covering it. No PIN was issued; handle manually or "
+                    "ask them to renew."
                 ),
             )
-            return "manual_review_membership_lapsed", booking, member
+            return "manual_review_membership_expiring", booking, member
         if cfg.dry_run:
             pin = "DRY-RUN-PIN"
+            valid_from = effective_start
         else:
             generated = igloo.create_monthly_algopin(
                 lock_id=cfg.lock_id,
                 member_name=member.full_name,
-                valid_from=now,
+                valid_from=period_start,
                 valid_until=valid_until,
                 variance=next_variance(conn) if conn is not None else 1,
             )
             pin = generated.code
-            # The API aligns the validity to whole local days.
+            # The client clamps a past start and aligns to the day/hour boundary.
+            valid_from = generated.valid_from
             valid_until = generated.valid_until
-        members.save_padlock_pin(member.member_id, pin, valid_until)
+        members.save_padlock_pin(member.member_id, pin, valid_from, valid_until)
 
     gmail.send_email(
         to=member.email,
@@ -174,26 +189,45 @@ def process_message(
     return "sent_pin", booking, member
 
 
-def pin_validity_end(
-    now: datetime, pin_valid_days: int, membership_expires_on: str | None, tz: ZoneInfo
-) -> datetime | None:
-    """End of validity for a new PIN: the earliest of now + pin_valid_days or
-    the membership renewal date (midnight, so the PIN dies before renewal day).
+def booking_period(
+    booking: Booking, now: datetime, tz: ZoneInfo
+) -> tuple[datetime, datetime]:
+    """The [start, end] a PIN must cover, as timezone-aware datetimes.
 
-    Returns None when the membership has already lapsed.
+    Falls back to `now` when the email's booking times could not be parsed.
     """
-    end = now + relativedelta(days=pin_valid_days)
+    start = _parse_local(booking.booking_start, tz) or now
+    end = _parse_local(booking.booking_end, tz) or start
+    return start, end
+
+
+def _parse_local(iso: str | None, tz: ZoneInfo) -> datetime | None:
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=tz) if dt.tzinfo is None else dt
+
+
+def pin_validity_end(
+    period_end: datetime, membership_expires_on: str | None, tz: ZoneInfo
+) -> datetime:
+    """End of the calendar month containing the booking, capped at the renewal
+    date (local midnight, so the PIN dies before the renewal day)."""
+    local_end = period_end.astimezone(tz)
+    end = (local_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+           + relativedelta(months=1))
     if membership_expires_on:
         try:
-            renewal = datetime.strptime(membership_expires_on, "%Y-%m-%d")
+            renewal = datetime.strptime(membership_expires_on, "%Y-%m-%d").replace(
+                tzinfo=tz
+            )
         except ValueError:
             renewal = None
-        if renewal is not None:
-            cap = renewal.replace(tzinfo=tz)
-            if cap < end:
-                end = cap
-    if end <= now:
-        return None
+        if renewal is not None and renewal < end:
+            end = renewal
     return end
 
 

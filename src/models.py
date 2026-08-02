@@ -22,20 +22,28 @@ class Member:
     email: str
     membership_expires_on: Optional[str] = None
     padlock_pin: Optional[str] = None
+    padlock_pin_valid_from: Optional[str] = None
     padlock_pin_valid_until: Optional[str] = None
     dedupe_hash: Optional[str] = None
 
-    def has_valid_padlock_pin(self, until: datetime) -> bool:
-        """True when the stored PIN remains valid through `until`."""
-        if not self.padlock_pin or not self.padlock_pin_valid_until:
+    def padlock_pin_covers(self, period_start: datetime, period_end: datetime) -> bool:
+        """True when the stored PIN spans the whole [start, end] booking period."""
+        if (
+            not self.padlock_pin
+            or not self.padlock_pin_valid_from
+            or not self.padlock_pin_valid_until
+        ):
             return False
         try:
-            expiry = datetime.fromisoformat(
+            valid_from = datetime.fromisoformat(
+                self.padlock_pin_valid_from.replace("Z", "+00:00")
+            )
+            valid_until = datetime.fromisoformat(
                 self.padlock_pin_valid_until.replace("Z", "+00:00")
             )
         except ValueError:
             return False
-        return expiry > until
+        return valid_from <= period_start and valid_until >= period_end
 
 
 @dataclass(frozen=True)

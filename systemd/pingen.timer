@@ -1,9 +1,10 @@
 [Unit]
-Description=Run CIAC PIN generator every 5 minutes
+Description=Run CIAC PIN generator every 10 minutes
 
 [Timer]
-OnBootSec=1min
-OnUnitActiveSec=5min
+OnBootSec=2min
+OnUnitActiveSec=10min
+Persistent=true
 
 [Install]
 WantedBy=timers.target

@@ -149,11 +149,15 @@ Replace this path and payload with the exact endpoint from your igloohome API ac
 ## Safety behaviour
 
 - Ignores already-processed Gmail messages using the stored `message_hash`.
-- Reuses an existing valid padlock PIN until `padlock_pin_valid_until`.
-- New PINs expire at the earliest of `PIN_VALID_DAYS` or the member's renewal
-  date (midnight, so the PIN dies before the renewal day). PINs of 29+ days
-  use the daily algoPIN endpoint; shorter ones use the hourly endpoint.
-- Lapsed memberships (renewal date in the past) get no PIN; admin is alerted.
+- Reuses the stored padlock PIN only when it covers the booking's start–end
+  period; otherwise issues a new one.
+- A new PIN runs from the booking's start time to the end of the booking's
+  calendar month, capped at the member's renewal date (midnight, so the PIN
+  dies before the renewal day). A booking start in the past is clamped to a few
+  minutes from now. PINs of 29+ days use the daily algoPIN endpoint; shorter
+  ones use the hourly endpoint.
+- If the renewal date is too soon to cover the booking, no PIN is issued and
+  the admin is alerted.
 - algoPIN variance cycles 1 → 2 → 3 across PIN creations.
 - Members sharing a name with another distinct member (identity hash from
   name/address/DOB/PIN) are never guessed; the admin is asked to issue manually.
