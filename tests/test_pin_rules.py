@@ -17,6 +17,28 @@ def _local(y, mo, d, h=0, mi=0):
     return datetime(y, mo, d, h, mi, tzinfo=TZ)
 
 
+def _future_booking_message(message_id="m1", days_ahead=30):
+    """A ball-machine booking email dated in the future, so the PIN window is valid."""
+    import base64
+    from datetime import timedelta
+
+    when = datetime.now(TZ) + timedelta(days=days_ahead)
+    date_line = f"9:00 - 10:00 am , {when:%A} {when.day} {when:%B} {when.year}"
+    body = base64.urlsafe_b64encode(
+        f"Date: {date_line}\nPlayer 1: Dave Dennehy\nPlayer 2: Ball Machine\n".encode()
+    ).decode().rstrip("=")
+    return {
+        "id": message_id, "threadId": "t1",
+        "payload": {
+            "headers": [
+                {"name": "Subject", "value": "Court Booking Confirmation: x"},
+                {"name": "Message-ID", "value": "<x@ebookingonline.net>"},
+            ],
+            "body": {"data": body},
+        },
+    }
+
+
 def _in_memory_db():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -97,6 +119,88 @@ def test_find_by_name_duplicate_rows_same_person():
     _add_member(conn, "2", "John Murphy", "hash-a")
     member = MemberRepository(conn).find_by_name("John Murphy", 90)
     assert member.full_name == "John Murphy"
+
+
+def test_dry_run_does_not_persist_placeholder_pin():
+    """A stored DRY-RUN-PIN would be reused by later real runs."""
+    from types import SimpleNamespace
+
+    from src.handler import process_message
+    from src.member_repo import MemberRepository
+
+    conn = _in_memory_db()
+    conn.execute(
+        """INSERT INTO members (member_id, full_name, email, membership_expires_on,
+                                dedupe_hash)
+           VALUES ('1', 'Dave Dennehy', 'dave@example.com', '2099-12-31', 'h')"""
+    )
+    conn.commit()
+
+    cfg = SimpleNamespace(
+        admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
+        club_timezone="Europe/Dublin", dry_run=True,
+    )
+    gmail = SimpleNamespace(send_email=lambda **kw: None, mark_read=lambda *a, **k: None)
+
+    def igloo_must_not_be_called(**kwargs):
+        raise AssertionError("dry run must not call the igloohome API")
+
+    igloo = SimpleNamespace(create_monthly_algopin=igloo_must_not_be_called)
+
+    msg = _future_booking_message()
+    status, _, _ = process_message(cfg, gmail, igloo, MemberRepository(conn), msg, conn)
+    assert status == "sent_pin"
+    stored = conn.execute("SELECT padlock_pin FROM members WHERE member_id='1'").fetchone()
+    assert stored["padlock_pin"] is None
+
+
+def test_stored_dry_run_pin_is_replaced_on_real_run():
+    """A DRY-RUN-PIN left in the database must not be emailed to a member."""
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from src.handler import DRY_RUN_PIN, process_message
+    from src.member_repo import MemberRepository
+
+    # Placeholder stored with a window wide enough to cover the booking, so only
+    # the placeholder check can stop it being reused.
+    conn = _in_memory_db()
+    conn.execute(
+        """INSERT INTO members (member_id, full_name, email, membership_expires_on,
+                                dedupe_hash, padlock_pin,
+                                padlock_pin_valid_from, padlock_pin_valid_until)
+           VALUES ('1', 'Dave Dennehy', 'dave@example.com', '2099-12-31', 'h', ?, ?, ?)""",
+        (
+            DRY_RUN_PIN,
+            (datetime.now(TZ) - timedelta(days=1)).isoformat(),
+            (datetime.now(TZ) + timedelta(days=365)).isoformat(),
+        ),
+    )
+    conn.commit()
+
+    cfg = SimpleNamespace(
+        admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
+        club_timezone="Europe/Dublin", dry_run=False,
+    )
+    sent = []
+    gmail = SimpleNamespace(
+        send_email=lambda **kw: sent.append(kw), mark_read=lambda *a, **k: None
+    )
+    igloo = SimpleNamespace(
+        create_monthly_algopin=lambda **kw: SimpleNamespace(
+            code="987654321",
+            valid_from=kw["valid_from"],
+            valid_until=kw["valid_until"],
+        )
+    )
+
+    msg = _future_booking_message()
+    status, _, _ = process_message(cfg, gmail, igloo, MemberRepository(conn), msg, conn)
+    assert status == "sent_pin"
+    stored = conn.execute("SELECT padlock_pin FROM members WHERE member_id='1'").fetchone()
+    assert stored["padlock_pin"] == "987654321"
+    assert DRY_RUN_PIN not in sent[-1]["body"]
+    assert "987654321" in sent[-1]["body"]
 
 
 def test_next_variance_cycles():
