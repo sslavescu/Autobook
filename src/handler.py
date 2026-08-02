@@ -95,6 +95,7 @@ def process_message(
 ) -> tuple[str, Booking | None, Member | None]:
     message_hash = hash_message_id(message["id"])
     if not is_ball_machine_booking(message):
+        logger.debug("%s: not a ball machine booking, skipping", message_hash[:12])
         return "skipped_not_ball_machine", None, None
 
     booking = parse_booking(message)
@@ -134,6 +135,16 @@ def process_message(
     tz = ZoneInfo(cfg.club_timezone)
     period_start, period_end = booking_period(booking, now, tz)
 
+    logger.debug(
+        "%s: member %s (%s), booking %s -> %s, stored PIN valid %s -> %s",
+        message_hash[:12],
+        member.full_name,
+        member.member_id,
+        period_start.isoformat(),
+        period_end.isoformat(),
+        member.padlock_pin_valid_from,
+        member.padlock_pin_valid_until,
+    )
     reusable = member.padlock_pin_covers(period_start, period_end)
     if reusable and member.padlock_pin == DRY_RUN_PIN and not cfg.dry_run:
         # Left over from a dry run against this database: it is not a real PIN,

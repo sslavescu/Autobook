@@ -5,13 +5,32 @@ import sys
 
 from dotenv import load_dotenv
 
-from src.handler import run
+# Load .env before configuring logging so LOG_LEVEL can be set there.
+load_dotenv()
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# The Google client libraries are extremely chatty at DEBUG; keep them at INFO
+# unless LOG_HTTP is on, so app-level debug output stays readable.
+for noisy in ("googleapiclient.discovery", "google_auth_httplib2", "google.auth"):
+    logging.getLogger(noisy).setLevel(logging.INFO)
+
+if os.getenv("LOG_HTTP", "false").lower() == "true":
+    # Full HTTP wire logging, including request/response headers.
+    # WARNING: this prints Authorization headers, OAuth tokens and PINs.
+    # Use only for local debugging, never on a shared or production host.
+    import http.client
+
+    http.client.HTTPConnection.debuglevel = 1
+    logging.getLogger("urllib3").setLevel(logging.DEBUG)
+    logging.getLogger("googleapiclient.discovery").setLevel(logging.DEBUG)
+    logger.warning("LOG_HTTP is on: logs will contain credentials and PINs")
+
+from src.handler import run  # noqa: E402  (import after logging is configured)
 
 
 def ping_healthcheck() -> None:
@@ -32,7 +51,6 @@ def ping_healthcheck() -> None:
 
 
 if __name__ == "__main__":
-    load_dotenv()
     result = run()
     processed = result.get("processed", [])
     if processed:

@@ -117,9 +117,13 @@ class IgloohomeClient:
         return self._token
 
     def _request(self, method: str, path: str, **kwargs) -> dict | list:
+        url = f"{self.base_url}{path}"
+        # Bodies here contain no secrets (dates, variance, access name), so they
+        # are safe to log; the bearer token is never logged.
+        logger.debug("igloohome -> %s %s body=%s", method, url, kwargs.get("json"))
         response = requests.request(
             method,
-            f"{self.base_url}{path}",
+            url,
             headers={
                 "Authorization": f"Bearer {self._access_token()}",
                 "Accept": "application/json",
@@ -127,7 +131,11 @@ class IgloohomeClient:
             timeout=20,
             **kwargs,
         )
-        if not response.ok:
+        if response.ok:
+            logger.debug(
+                "igloohome <- %s %s: %s", response.status_code, path, response.text[:500]
+            )
+        else:
             logger.error(
                 "igloohome %s %s -> %s: %s",
                 method,

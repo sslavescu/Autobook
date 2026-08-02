@@ -82,10 +82,12 @@ class GmailClient:
             query_parts.append(f'subject:"{subject_filter}"')
         if sender_filter:
             query_parts.append(f"from:{sender_filter}")
+        query = " ".join(query_parts)
         response = self.service.users().messages().list(
-            userId="me", q=" ".join(query_parts), maxResults=max_results
+            userId="me", q=query, maxResults=max_results
         ).execute()
         messages = response.get("messages", [])
+        logger.info("Gmail query %r matched %d message(s)", query, len(messages))
         return [self.get_message(m["id"]) for m in messages]
 
     def get_message(self, message_id: str) -> dict:
@@ -100,8 +102,10 @@ class GmailClient:
         in_reply_to: str | None = None,
     ) -> None:
         if self.redirect_to:
+            logger.info("Redirecting email for %s to %s (test mode)", to, self.redirect_to)
             body = f"[TEST MODE] Intended recipient: {to}\n\n{body}"
             to = self.redirect_to
+        logger.debug("Sending email to %s subject=%r thread=%s", to, subject, thread_id)
         msg = MIMEText(body)
         msg["To"] = to
         msg["Subject"] = subject
