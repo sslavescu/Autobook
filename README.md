@@ -93,30 +93,38 @@ sudo systemctl enable --now pingen.timer
 ## Booking email parsing
 
 Booking confirmations come from `noreply@ebookingonline.net` with subjects
-starting `Court Booking Confirmation:`. The ball machine is booked as an
-accessory, so the confirmation is addressed to the member who booked it and
-needs no other players:
+starting `Court Booking Confirmation:`. ebookingonline sends some as plain text
+and some as HTML only, and may change which, so every email is fetched in raw
+form (Gmail's "Show original") and its body reduced to one canonical text
+(`src/email_reader.py`): the plain-text part if present, otherwise the HTML
+with table rows as lines and cells separated by a tab. Both formats come out as
+`Label<TAB>value` lines, and all parsing runs on that text.
+
+This mailbox receives two kinds of confirmation:
+
+| Kind | How it's recognised | Outcome |
+|---|---|---|
+| **Accessory booking** (the club's ball machine) | greeting is not `Hi Ball`, no `Ball Machine` player, and a `Cost of Booking` entry | PIN issued to Player 1 |
+| **Ball Machine user booking** (a member's own machine) | greeted `Hi Ball`, or `Ball Machine` / `Ball M` listed as a player | info log only, no PIN (`skipped_ball_machine_user`) |
+
+An email that looks like an accessory booking but has no `Cost of Booking`
+entry is flagged as wrong: no PIN, an admin email containing the message, and
+an info log (`flagged_missing_cost`). Cancellations use the subject
+`Court Cancellation Confirmation` and are excluded by the subject filter.
+
+A typical accessory booking:
 
 ```text
-Hi Sorin,
-
-This is to confirm your court booking at CIAC as follows:
-
-        Ref:        181973
-        Sport:      Tennis
-        Court:      Court 5
-        Date:       10:30 - 11:00 am , Sunday 13th September 2026
-        Player 1:   Sorin Slavescu
+Hi Jane,
+Date:<TAB>10:30 - 11:00 am , Sunday 13th September 2026
+Player 1:<TAB>Jane Doe
+Cost of Booking<TAB>€4.00
 ```
 
-The PIN is issued to `Player 1`. The `Date:` line is parsed into
-`booking_start`/`booking_end` (am/pm inferred for ranges like `11:30 - 1:00 pm`).
-
-Confirmations in the earlier format, where the machine was booked as a player
-(greeted `Hi Ball`, or listing `Ball Machine` / `Ball M` among `Player 1`–`Player 4`),
-are not accessory bookings. They are skipped with no PIN
-(status `skipped_not_accessory_booking`). Cancellation emails use the subject
-`Court Cancellation Confirmation` and are excluded by the subject filter.
+Player, Date and Cost labels tolerate a missing colon and any spacing. The
+`Date` value is parsed into `booking_start`/`booking_end` (am/pm inferred for
+ranges like `11:30 - 1:00 pm`). Tests use anonymised real emails saved in
+`tests/fixtures/*.eml`.
 
 ## Stored booking data
 

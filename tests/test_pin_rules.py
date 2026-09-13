@@ -19,23 +19,17 @@ def _local(y, mo, d, h=0, mi=0):
 
 def _future_booking_message(message_id="m1", days_ahead=30):
     """An accessory booking email dated in the future, so the PIN window is valid."""
-    import base64
     from datetime import timedelta
+
+    from email_builder import make_email
 
     when = datetime.now(TZ) + timedelta(days=days_ahead)
     date_line = f"9:00 - 10:00 am , {when:%A} {when.day} {when:%B} {when.year}"
-    text = f"Hi Dave,\n\nDate: {date_line}\nPlayer 1: Dave Dennehy\n"
-    body = base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
-    return {
-        "id": message_id, "threadId": "t1",
-        "payload": {
-            "headers": [
-                {"name": "Subject", "value": "Court Booking Confirmation: x"},
-                {"name": "Message-ID", "value": "<x@ebookingonline.net>"},
-            ],
-            "body": {"data": body},
-        },
-    }
+    text = (
+        f"Hi Dave,\n\nDate: {date_line}\nPlayer 1: Dave Dennehy\n"
+        "Cost of Booking\t€4.00\n"
+    )
+    return make_email("Court Booking Confirmation: x", text, message_id=message_id)
 
 
 def _in_memory_db():
@@ -285,3 +279,104 @@ def test_pin_start_never_precedes_now():
     assert pin_start_for_booking(
         booking, _local(2026, 8, 22, 20, 30), TZ
     ) == _local(2026, 8, 22, 21, 0)
+
+
+def _fake_gmail():
+    from types import SimpleNamespace
+
+    sent = []
+    return SimpleNamespace(send_email=lambda **kw: sent.append(kw)), sent
+
+
+def _igloo_must_not_be_called():
+    from types import SimpleNamespace
+
+    def fail(**kwargs):
+        raise AssertionError("no PIN may be generated for this email")
+
+    return SimpleNamespace(create_monthly_algopin=fail)
+
+
+def test_parse_failure_alert_contains_message_text_not_hash():
+    from types import SimpleNamespace
+
+    from email_builder import make_email
+
+    from src.booking_parser import hash_message_id
+    from src.handler import process_message
+
+    email = make_email(
+        "Court Booking Confirmation: 9:00",
+        "Hi Dave,\r\n\r\nDate: 9:00 - 10:00 am , Sunday 13th September 2026\r\n"
+        "Cost of Booking\t€4.00\r\n",
+        message_id="m-parse-fail",
+    )
+    gmail, sent = _fake_gmail()
+    cfg = SimpleNamespace(admin_email="admin@x")
+
+    status, _, _ = process_message(cfg, gmail, _igloo_must_not_be_called(), None, email)
+
+    assert status == "manual_review_parse_failed"
+    alert = sent[-1]["body"]
+    assert "Subject: Court Booking Confirmation: 9:00" in alert
+    assert "From: CIAC <noreply@ebookingonline.net>" in alert
+    assert "Hi Dave," in alert and "Date: 9:00 - 10:00 am" in alert
+    assert hash_message_id("m-parse-fail") not in alert
+
+
+def test_ball_machine_user_booking_is_logged_only(caplog):
+    import logging
+    from types import SimpleNamespace
+
+    from email_builder import load_fixture
+
+    from src.handler import process_message
+
+    gmail, sent = _fake_gmail()
+    cfg = SimpleNamespace(admin_email="admin@x")
+    with caplog.at_level(logging.INFO, logger="src.handler"):
+        status, booking, member = process_message(
+            cfg, gmail, _igloo_must_not_be_called(), None,
+            load_fixture("ball_machine_user_html.eml"),
+        )
+
+    assert status == "skipped_ball_machine_user"
+    assert sent == []  # no admin or member email
+    assert "Ball Machine user found, not an accessory booking" in caplog.text
+
+
+def test_accessory_booking_without_cost_is_flagged_to_admin(caplog):
+    import logging
+    from types import SimpleNamespace
+
+    from email_builder import fixture_body, make_email
+
+    from src.handler import process_message
+
+    subject, _, body = fixture_body("accessory_plain.eml")
+    body = "\n".join(line for line in body.splitlines() if "Cost of Booking" not in line)
+    gmail, sent = _fake_gmail()
+    cfg = SimpleNamespace(admin_email="admin@x")
+
+    with caplog.at_level(logging.INFO, logger="src.handler"):
+        status, booking, member = process_message(
+            cfg, gmail, _igloo_must_not_be_called(), None, make_email(subject, body)
+        )
+
+    assert status == "flagged_missing_cost"
+    assert booking.requester_name == "Jane Doe" and member is None
+    assert [m["to"] for m in sent] == ["admin@x"]  # admin only, never the member
+    assert "no Cost of Booking" in sent[0]["subject"]
+    assert "Player 1:\tJane Doe" in sent[0]["body"]
+    assert "no Cost of Booking entry; flagged as wrong" in caplog.text
+
+
+def test_message_as_text_flags_empty_body():
+    from src.handler import message_as_text
+    from src.models import InboundEmail
+
+    email = InboundEmail(
+        id="m", thread_id="t", subject="x", sender="s", date="d",
+        message_id_header=None, text="",
+    )
+    assert "no readable text" in message_as_text(email)

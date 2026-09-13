@@ -9,6 +9,9 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+from .email_reader import parse_raw_email
+from .models import InboundEmail
+
 logger = logging.getLogger(__name__)
 
 SCOPES = [
@@ -76,7 +79,9 @@ class GmailClient:
         # real recipient (test mode); the intended recipient is noted in the body.
         self.redirect_to = redirect_to
 
-    def search_booking_messages(self, subject_filter: str, sender_filter: str = "", max_results: int = 10) -> list[dict]:
+    def search_booking_messages(
+        self, subject_filter: str, sender_filter: str = "", max_results: int = 10
+    ) -> list[InboundEmail]:
         query_parts = ["is:unread"]
         if subject_filter:
             query_parts.append(f'subject:"{subject_filter}"')
@@ -90,8 +95,22 @@ class GmailClient:
         logger.info("Gmail query %r matched %d message(s)", query, len(messages))
         return [self.get_message(m["id"]) for m in messages]
 
-    def get_message(self, message_id: str) -> dict:
-        return self.service.users().messages().get(userId="me", id=message_id, format="full").execute()
+    def get_message(self, message_id: str) -> InboundEmail:
+        """Fetch the message exactly as sent (Gmail's "Show original") and read it.
+
+        format=raw gives the original RFC 822 bytes, so the stdlib email parser
+        handles MIME structure, charsets and transfer encodings consistently for
+        both plain-text and HTML-only confirmations. Fetching doesn't mark it read.
+        """
+        response = (
+            self.service.users()
+            .messages()
+            .get(userId="me", id=message_id, format="raw")
+            .execute()
+        )
+        encoded = response["raw"]
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        return parse_raw_email(raw, response["id"], response.get("threadId", response["id"]))
 
     def send_email(
         self,

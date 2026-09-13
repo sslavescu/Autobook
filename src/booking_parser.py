@@ -1,46 +1,61 @@
 import re
 from datetime import datetime, time
+from enum import Enum
 from hashlib import sha256
 from typing import Optional
 
-from .models import Booking
+from .models import Booking, InboundEmail
 
 
-# The ball machine is booked as an accessory. The confirmation is addressed to
-# the member who booked it, and the member can book it without other players:
+# Parsing works on InboundEmail.text: the body reduced to canonical text by
+# email_reader, one "Label<TAB>value" line per field, whether ebookingonline
+# sent plain text or HTML.
 #
-#   Subject: Court Booking Confirmation: 10:30 - 11:00 am , Sunday 13th September 2026
+# This mailbox receives two kinds of Court Booking Confirmation:
 #
-#   Hi Sorin,
-#   This is to confirm your court booking at CIAC as follows:
-#       Ref:        181973
-#       Sport:      Tennis
-#       Court:      Court 5
-#       Date:       10:30 - 11:00 am , Sunday 13th September 2026
-#       Player 1:   Sorin Slavescu
+# * Accessory bookings - the club's ball machine booked as an accessory. These
+#   get a PIN. The email greets the member and has a Cost of Booking entry:
 #
-# The earlier format booked the machine as a player instead: greeted "Hi Ball"
-# and listed "Ball Machine" (or "Ball M") among Player 1-4. Those messages are
-# not accessory bookings and never get a PIN. The PIN goes to Player 1.
+#     Hi Jane,
+#     Date<TAB>10:30 - 11:00 am , Sunday 13th September 2026
+#     Player 1<TAB>Jane Doe
+#     Cost of Booking<TAB>€4.00
+#
+# * Ball Machine user bookings - a member bringing their own ball machine books
+#   the "Ball Machine" user as a player. These get no PIN. The email greets
+#   "Hi Ball" and lists Ball Machine (older account name "Ball M") as a player.
+#
 # Cancellations use the subject "Court Cancellation Confirmation" and are
 # excluded by the subject prefix.
 
 BOOKING_SUBJECT_PREFIX = "court booking confirmation"
 
-OLD_FORMAT_GREETING_PATTERN = re.compile(r"\A\s*Hi\s+Ball\b", re.I)
-BALL_MACHINE_PLAYER_PATTERN = re.compile(
-    r"^\s*Player\s*[1-4]\s*:\s*Ball\s+M(?:achine)?\s*$", re.I | re.M
-)
-# No trailing $: real emails use \r\n line endings and $ does not match
-# before \r. [^\r\n]* already stops at the end of the line.
-PLAYER1_PATTERN = re.compile(r"^\s*Player\s*1\s*:[ \t]*(?P<name>\S[^\r\n]*)", re.I | re.M)
-DATE_LINE_PATTERN = re.compile(r"^\s*Date\s*:[ \t]*(?P<period>\S[^\r\n]*)", re.I | re.M)
 
-# "Cost of Booking			€4.00" — the accessory format has no colon after the
-# label, so it is optional. The separate "debited by" and "current balance"
+class BookingKind(str, Enum):
+    NOT_BOOKING_CONFIRMATION = "not_booking_confirmation"
+    BALL_MACHINE_USER = "ball_machine_user"
+    ACCESSORY_BOOKING = "accessory_booking"
+    ACCESSORY_MISSING_COST = "accessory_missing_cost"
+
+
+# Gaps between a label and its value are horizontal whitespace only, never a
+# line break, so a label with no value can't pull in the next line.
+_GAP = r"[^\S\n]*"
+_PLAYER_LABEL = rf"^{_GAP}Player{_GAP}\d+{_GAP}:?{_GAP}"
+
+GREETING_PATTERN = re.compile(r"^Hi\s+(?P<name>[^,\n]+)", re.I | re.M)
+PLAYER_PATTERN = re.compile(_PLAYER_LABEL + r"(?P<name>[^\s:][^\n]*)", re.I | re.M)
+BALL_MACHINE_PLAYER_PATTERN = re.compile(
+    _PLAYER_LABEL + rf"Ball{_GAP}M(?:achine)?{_GAP}$", re.I | re.M
+)
+DATE_LINE_PATTERN = re.compile(
+    rf"^{_GAP}Date{_GAP}:?{_GAP}(?P<period>[^\s:][^\n]*)", re.I | re.M
+)
+# "Cost of Booking<TAB>€4.00". The separate "debited by" and "current balance"
 # lines are deliberately not matched.
 COST_PATTERN = re.compile(
-    r"Cost\s+of\s+Booking\s*:?\s*[€£$]?\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?)",
+    rf"Cost{_GAP}of{_GAP}Booking{_GAP}:?{_GAP}[€£$]?{_GAP}"
+    r"(?P<amount>\d[\d,]*(?:\.\d{1,2})?)",
     re.I,
 )
 
@@ -54,62 +69,31 @@ PERIOD_PATTERN = re.compile(
 )
 
 
-def extract_text(payload: dict) -> str:
-    """Extract text from a Gmail API message payload."""
-    parts = payload.get("parts", [])
-    if not parts:
-        body = payload.get("body", {}).get("data")
-        return _decode_gmail_body(body) if body else ""
-
-    texts: list[str] = []
-    for part in parts:
-        mime_type = part.get("mimeType")
-        if mime_type == "text/plain":
-            data = part.get("body", {}).get("data")
-            if data:
-                texts.append(_decode_gmail_body(data))
-        elif "parts" in part:
-            texts.append(extract_text(part))
-    return "\n".join(t for t in texts if t)
+def classify_booking(email: InboundEmail) -> BookingKind:
+    """Decide which kind of confirmation this is, and so whether it gets a PIN."""
+    if not email.subject.strip().lower().startswith(BOOKING_SUBJECT_PREFIX):
+        return BookingKind.NOT_BOOKING_CONFIRMATION
+    if _greets_ball_machine_user(email.text) or BALL_MACHINE_PLAYER_PATTERN.search(
+        email.text
+    ):
+        return BookingKind.BALL_MACHINE_USER
+    if extract_cost(email.text) is None:
+        return BookingKind.ACCESSORY_MISSING_COST
+    return BookingKind.ACCESSORY_BOOKING
 
 
-def _decode_gmail_body(data: str) -> str:
-    import base64
-
-    padded = data + "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8", errors="replace")
+def _greets_ball_machine_user(text: str) -> bool:
+    greeting = GREETING_PATTERN.search(text)
+    return bool(greeting) and re.match(r"Ball\b", greeting.group("name").strip(), re.I) is not None
 
 
-def header_value(payload: dict, name: str) -> str:
-    for header in payload.get("headers", []):
-        if header.get("name", "").lower() == name.lower():
-            return header.get("value", "")
-    return ""
+def parse_booking(email: InboundEmail) -> Optional[Booking]:
+    """Extract the booker (first Player line), booking period and cost.
 
-
-def is_accessory_booking(message: dict) -> bool:
-    """True for a ball-machine accessory booking confirmation.
-
-    Old-format confirmations (greeted "Hi Ball", or with Ball Machine as a
-    player) are not accessory bookings.
+    Returns None if no player line is found. Accessory bookings list a single
+    player: the member who booked the machine.
     """
-    payload = message.get("payload", {})
-    subject = header_value(payload, "Subject").strip().lower()
-    if not subject.startswith(BOOKING_SUBJECT_PREFIX):
-        return False
-    body = extract_text(payload)
-    if OLD_FORMAT_GREETING_PATTERN.search(body):
-        return False
-    return BALL_MACHINE_PLAYER_PATTERN.search(body) is None
-
-
-def parse_booking(message: dict) -> Optional[Booking]:
-    """Extract Player 1 and the booking period. Returns None if Player 1 is missing."""
-    payload = message.get("payload", {})
-    subject = header_value(payload, "Subject")
-    body = extract_text(payload)
-
-    match = PLAYER1_PATTERN.search(body)
+    match = PLAYER_PATTERN.search(email.text)
     if not match:
         return None
     requester_name = " ".join(match.group("name").split())
@@ -117,7 +101,7 @@ def parse_booking(message: dict) -> Optional[Booking]:
     booking_period = None
     booking_start = None
     booking_end = None
-    date_match = DATE_LINE_PATTERN.search(body)
+    date_match = DATE_LINE_PATTERN.search(email.text)
     if date_match:
         booking_period = " ".join(date_match.group("period").split())
         start, end = parse_period(booking_period)
@@ -125,15 +109,15 @@ def parse_booking(message: dict) -> Optional[Booking]:
         booking_end = end.isoformat() if end else None
 
     return Booking(
-        message_hash=hash_message_id(message["id"]),
-        thread_id=message.get("threadId", message["id"]),
+        message_hash=hash_message_id(email.id),
+        thread_id=email.thread_id,
         requester_name=requester_name,
-        raw_subject=subject,
-        message_id_header=header_value(payload, "Message-ID") or None,
+        raw_subject=email.subject,
+        message_id_header=email.message_id_header,
         booking_period=booking_period,
         booking_start=booking_start,
         booking_end=booking_end,
-        cost=extract_cost(body),
+        cost=extract_cost(email.text),
     )
 
 

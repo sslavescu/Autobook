@@ -4,6 +4,19 @@ from typing import Optional
 
 
 @dataclass(frozen=True)
+class InboundEmail:
+    """A Gmail message read in raw form, with its body reduced to canonical text."""
+
+    id: str
+    thread_id: str
+    subject: str
+    sender: str
+    date: str
+    message_id_header: Optional[str]
+    text: str
+
+
+@dataclass(frozen=True)
 class Booking:
     message_hash: str
     thread_id: str

@@ -5,13 +5,13 @@ from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
 import logging
 
-from .booking_parser import hash_message_id, is_accessory_booking, parse_booking
+from .booking_parser import BookingKind, classify_booking, hash_message_id, parse_booking
 from .config import Config, load_config
 from .db import connect, next_variance
 from .gmail_client import GmailClient, load_gmail_credentials
 from .igloohome_client import IgloohomeClient, pin_start_for_booking
 from .member_repo import AmbiguousMemberError, MemberRepository
-from .models import Booking, Member
+from .models import Booking, InboundEmail, Member
 from .processed_repo import ProcessedEmailRepository
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def run(cfg: Config | None = None) -> dict:
 
     results = []
     for message in messages:
-        message_id = message["id"]
+        message_id = message.id
         message_hash = hash_message_id(message_id)
         if processed.seen(message_hash, cfg.max_process_attempts):
             continue
@@ -91,19 +91,54 @@ def _alert_admin_failure(cfg, gmail, message_hash: str, attempts: int) -> None:
 
 
 def process_message(
-    cfg, gmail, igloo, members, message: dict, conn=None
+    cfg, gmail, igloo, members, message: InboundEmail, conn=None
 ) -> tuple[str, Booking | None, Member | None]:
-    message_hash = hash_message_id(message["id"])
-    if not is_accessory_booking(message):
-        logger.debug("%s: not a ball machine accessory booking, skipping", message_hash[:12])
-        return "skipped_not_accessory_booking", None, None
+    message_hash = hash_message_id(message.id)
+    kind = classify_booking(message)
+
+    if kind is BookingKind.NOT_BOOKING_CONFIRMATION:
+        logger.info(
+            "%s: not a booking confirmation, skipping (%s)", message_hash[:12], message.subject
+        )
+        return "skipped_not_booking_confirmation", None, None
+
+    if kind is BookingKind.BALL_MACHINE_USER:
+        logger.info(
+            "%s: booking for the Ball Machine user found, not an accessory booking; "
+            "no PIN issued (%s)",
+            message_hash[:12],
+            message.subject,
+        )
+        return "skipped_ball_machine_user", None, None
 
     booking = parse_booking(message)
+
+    if kind is BookingKind.ACCESSORY_MISSING_COST:
+        logger.info(
+            "%s: accessory booking has no Cost of Booking entry; flagged as wrong, "
+            "no PIN issued (%s)",
+            message_hash[:12],
+            message.subject,
+        )
+        gmail.send_email(
+            to=cfg.admin_email,
+            subject="Ball machine booking flagged - no Cost of Booking",
+            body=(
+                "This looks like a ball machine accessory booking, but it has no "
+                "Cost of Booking entry, so no PIN was issued. Please check the "
+                "booking:\n\n" + message_as_text(message)
+            ),
+        )
+        return "flagged_missing_cost", booking, None
+
     if not booking:
         gmail.send_email(
             to=cfg.admin_email,
             subject="Ball machine booking requires manual review",
-            body=f"Could not extract a member name from Gmail message hash {message_hash}.",
+            body=(
+                "Could not extract a member name (the Player line) from this "
+                "booking confirmation:\n\n" + message_as_text(message)
+            ),
         )
         return "manual_review_parse_failed", None, None
 
@@ -259,6 +294,15 @@ def pin_validity_end(
         return end
     cap = expiry_day.replace(hour=23, minute=59, tzinfo=tz)
     return cap if end > cap else end
+
+
+def message_as_text(message: InboundEmail) -> str:
+    """Key headers plus the body as read (canonical text), for admin alerts."""
+    body = message.text or "(no readable text found in the email body)"
+    return (
+        f"From: {message.sender}\nDate: {message.date}\nSubject: {message.subject}"
+        f"\n\n{body}"
+    )
 
 
 def reply_subject(original_subject: str) -> str:
