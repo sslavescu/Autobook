@@ -1,0 +1,115 @@
+From: CIAC <noreply@ebookingonline.net>
+To: ballmachine@example.com
+Subject: Court Booking Confirmation: 9:30 , Wednesday 9th September 2026
+Date: Tue, 08 Sep 2026 17:36:32 +0100
+Message-ID: <fixture-4@serverc.ebookingonline.example>
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+<!DOCTYPE html>
+		<html lang="en-GB"><head><title>eBookingOnline</title><style>
+		<!--
+		p {font-family:veranda,sans-serif;font-size:12px;}
+		-->
+		</style></head>
+		<body>
+		<div style="border-top:2px solid #807F7D;padding-top:4px;"></div>
+		<p
+style="font-family:arial;font-size:24px;color:#807F7D;padding-top:2px;display:inline"><span
+style="color:#F79B07">e</span>Booking<span
+style="color:#F79B07;">O</span>nline Booking Confirmation</p>
+		<p>Hi Ball,</p>
+		<p>This is to confirm your Court booking at CIAC as follows:</p>
+		<table
+style="min-width:400px;background-color:#FFFFFF;border-spacing:4px;border-collapse:separate;">
+		<tr>
+		<td
+style="font-family:arial;font-size:12px;padding:5px;color:#fff;background-color:#F79B07">Reference</td>
+		<td
+style="font-family:arial;font-size:12px;padding:5px;color:#807F7D;background-color:#FFEFD6">180536,180537</td>
+		</tr>
+		<tr>
+		<td
+style="font-family:arial;font-size:12px;padding:5px;color:#fff;background-color:#F79B07">Sport</td>
+		<td
+style="font-family:arial;font-size:12px;padding:5px;color:#807F7D;background-color:#FFEFD6">Tennis</td>
+		</tr>
+		<tr>
+		<td
+style="font-family:arial;font-size:12px;padding:5px;color:#fff;background-color:#F79B07">Court</td>
+		<td
+style="font-family:arial;font-size:12px;padding:5px;color:#807F7D;background-color:#FFEFD6">.Wingfield
+Court 1</td>
+		</tr><tr><td
+style="font-family:arial;font-size:12px;padding:5px;color:#fff;background-color:#F79B07">Date</td><td
+style="font-family:arial;font-size:12px;padding:5px;color:#807F7D;background-color:#FFEFD6">9:30
+, Wednesday 9th September 2026</td></tr>
+			<tr>
+			<td
+style="font-family:arial;font-size:12px;padding:5px;color:#fff;background-color:#F79B07">Player
+1</td>
+			<td
+style="font-family:arial;font-size:12px;padding:5px;color:#807F7D;background-color:#FFEFD6">Chris
+White</td>
+			</tr>
+			<tr>
+			<td
+style="font-family:arial;font-size:12px;padding:5px;color:#fff;background-color:#F79B07">Player
+2</td>
+			<td
+style="font-family:arial;font-size:12px;padding:5px;color:#807F7D;background-color:#FFEFD6">Ball
+Machine</td>
+			</tr></table>
+		<p>To manage your bookings or change your email preferences visit
+the Club Booking system at <a
+href="https://ebookingonline.net/mobile/278">https://ebookingonline.net/mobile/278</a></p><p>Please
+do not reply to this email, it is sent from an unattended mailbox, if
+you have problems in managing your account please contact your <a
+href="mailto:registrarciac@gmail.com">club administrator.</a></p><p
+style="font-size:9px;border-top:1px solid
+gray;color:gray;padding-top:4px">This email was sent using the
+eBookingOnline Court Reservation System for more information please
+visit <a href="https://ebookingonline.net">ebookingonline.net</a>
+</p>
+			<script type="application/ld+json">
+			{
+				"@context":"http://schema.org",
+				"@type":"EventReservation",
+				"reservationId":"180536,180537",
+				"reservationNumber":"180536,180537",
+				"underName":{
+					"@context":"http://schema.org",
+					"@type":"Person",
+					"name":"Ball ",
+					"email":"ciacballmachine@gmail.com"
+				},
+				"reservationStatus":"ReservationConfirmed",
+				"reservationFor":{
+					"@context":"http://schema.org",
+					"@type":"Event",
+					"name":"Tennis Booking",
+					"startDate":"2026-09-09T09:30:00+01:00",
+					"endDate":"1970-01-01T01:00:00+01:00",
+					"performer":{
+						"@context":"http://schema.org",
+						"@type":"Organization",
+						"name":"CIAC"
+					},
+					"location":{ 
+						"@type" : "Place",
+						"name" : "CIAC",
+						"address" : {
+							"@type" : "PostalAddress",
+							"streetAddress" : "CIAC",
+							"AddressCountry" : "CIAC",
+							"addressLocality" : "CIAC",
+							"AddressRegion" : "CIAC",
+							"postalCode" : "CIAC"
+						}
+					}
+				},
+				"cancelReservationUrl":"https://ebookingonline.net/box/278",
+				"modifyReservationUrl":"https://ebookingonline.net/box/278"
+			}
+			</script></body></html>
