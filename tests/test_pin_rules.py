@@ -241,7 +241,7 @@ def test_algopin_endpoint_selection(monkeypatch, tmp_path):
 
     monkeypatch.setattr(client, "_request", fake_request)
 
-    # PIN_VALID_DAYS is capped below 10, so real runs always take this path.
+    # PIN_VALID_DAYS is capped at 11, so real runs always take this path.
     client.create_monthly_algopin("dev", "Member", NOW, NOW + timedelta(days=7))
     path, payload = calls[-1]
     assert path.endswith("/algopin/hourly")

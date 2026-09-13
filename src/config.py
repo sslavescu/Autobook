@@ -4,9 +4,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# A padlock PIN is short-lived by design; anything longer is assumed to be a
-# configuration mistake and stops the application at startup.
-MAX_PIN_VALID_DAYS = 10
+# Bookings can be made at most 10 days in advance, so a PIN never needs to
+# last longer than 11 days. Anything longer is treated as a configuration
+# mistake and stops the application at startup.
+MAX_PIN_VALID_DAYS = 11
 
 
 class ConfigError(Exception):
@@ -40,10 +41,10 @@ def _pin_valid_days() -> int:
         days = int(raw)
     except ValueError:
         raise ConfigError(f"PIN_VALID_DAYS must be a whole number, got {raw!r}") from None
-    if days < 1 or days >= MAX_PIN_VALID_DAYS:
+    if days < 1 or days > MAX_PIN_VALID_DAYS:
         raise ConfigError(
             f"PIN_VALID_DAYS is {days}; it must be between 1 and "
-            f"{MAX_PIN_VALID_DAYS - 1} days. Update the value in .env."
+            f"{MAX_PIN_VALID_DAYS} days. Update the value in .env."
         )
     return days
 

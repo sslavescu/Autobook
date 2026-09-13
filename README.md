@@ -156,8 +156,8 @@ Replace this path and payload with the exact endpoint from your igloohome API ac
 - A new PIN starts at the whole hour before the booking (21:30 → 21:00; a
   21:00 booking starts at 20:00 so the member can get in early), falling back
   to the booking's own hour if that hour has already passed.
-- It stays valid for `PIN_VALID_DAYS` (1–9; the app refuses to start outside
-  that range), capped at 23:59 on the member's membership expiry day when
+- It stays valid for `PIN_VALID_DAYS` (1–11, since bookings open at most 10 days
+  ahead; the app refuses to start outside that range), capped at 23:59 on the member's membership expiry day when
   `CHECK_MEMBERSHIP_EXPIRY` is enabled.
 - If the membership leaves no valid window, no PIN is issued and the admin is
   alerted.
