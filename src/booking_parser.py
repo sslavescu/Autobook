@@ -6,27 +6,28 @@ from typing import Optional
 from .models import Booking
 
 
-# Booking confirmations from ebookingonline.net look like:
+# The ball machine is booked as an accessory. The confirmation is addressed to
+# the member who booked it, and the member can book it without other players:
 #
-#   Subject: Court Booking Confirmation: 9:00 - 10:00 am , Saturday 13th June 2026
+#   Subject: Court Booking Confirmation: 10:30 - 11:00 am , Sunday 13th September 2026
 #
-#   Hi Ball,
+#   Hi Sorin,
 #   This is to confirm your court booking at CIAC as follows:
-#       Ref:        171392,171393
+#       Ref:        181973
 #       Sport:      Tennis
-#       Court:      Court 6
-#       Date:       9:00 - 10:00 am , Saturday 13th June 2026
-#       Player 1:   Elle Marie Meñosa
-#       Player 2:   Ball Machine
+#       Court:      Court 5
+#       Date:       10:30 - 11:00 am , Sunday 13th September 2026
+#       Player 1:   Sorin Slavescu
 #
-# A booking is for the ball machine when any of Player 1-4 is "Ball Machine".
-# The PIN goes to Player 1. Cancellations use the subject
-# "Court Cancellation Confirmation" and are excluded by the subject prefix.
+# The earlier format booked the machine as a player instead: greeted "Hi Ball"
+# and listed "Ball Machine" (or "Ball M") among Player 1-4. Those messages are
+# not accessory bookings and never get a PIN. The PIN goes to Player 1.
+# Cancellations use the subject "Court Cancellation Confirmation" and are
+# excluded by the subject prefix.
 
 BOOKING_SUBJECT_PREFIX = "court booking confirmation"
 
-# "Ball M" is the pre-renaming form of the booking-system account name,
-# seen in confirmations up to May 2026.
+OLD_FORMAT_GREETING_PATTERN = re.compile(r"\A\s*Hi\s+Ball\b", re.I)
 BALL_MACHINE_PLAYER_PATTERN = re.compile(
     r"^\s*Player\s*[1-4]\s*:\s*Ball\s+M(?:achine)?\s*$", re.I | re.M
 )
@@ -35,9 +36,9 @@ BALL_MACHINE_PLAYER_PATTERN = re.compile(
 PLAYER1_PATTERN = re.compile(r"^\s*Player\s*1\s*:[ \t]*(?P<name>\S[^\r\n]*)", re.I | re.M)
 DATE_LINE_PATTERN = re.compile(r"^\s*Date\s*:[ \t]*(?P<period>\S[^\r\n]*)", re.I | re.M)
 
-# "Cost of Booking: €5.00" — a booking that cost nothing is not a chargeable
-# ball-machine booking, so it gets no PIN. Only this line counts; the separate
-# "debited by" and "current balance" lines are ignored.
+# "Cost of Booking			€4.00" — the accessory format has no colon after the
+# label, so it is optional. The separate "debited by" and "current balance"
+# lines are deliberately not matched.
 COST_PATTERN = re.compile(
     r"Cost\s+of\s+Booking\s*:?\s*[€£$]?\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?)",
     re.I,
@@ -86,13 +87,20 @@ def header_value(payload: dict, name: str) -> str:
     return ""
 
 
-def is_ball_machine_booking(message: dict) -> bool:
-    """True when the email is a booking confirmation with Ball Machine as a player."""
+def is_accessory_booking(message: dict) -> bool:
+    """True for a ball-machine accessory booking confirmation.
+
+    Old-format confirmations (greeted "Hi Ball", or with Ball Machine as a
+    player) are not accessory bookings.
+    """
     payload = message.get("payload", {})
     subject = header_value(payload, "Subject").strip().lower()
     if not subject.startswith(BOOKING_SUBJECT_PREFIX):
         return False
-    return BALL_MACHINE_PLAYER_PATTERN.search(extract_text(payload)) is not None
+    body = extract_text(payload)
+    if OLD_FORMAT_GREETING_PATTERN.search(body):
+        return False
+    return BALL_MACHINE_PLAYER_PATTERN.search(body) is None
 
 
 def parse_booking(message: dict) -> Optional[Booking]:

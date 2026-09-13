@@ -51,7 +51,13 @@ def ping_healthcheck() -> None:
 
 
 if __name__ == "__main__":
-    result = run()
+    from src.config import ConfigError
+
+    try:
+        result = run()
+    except ConfigError as exc:
+        logger.error("Configuration error: %s", exc)
+        sys.exit(2)
     processed = result.get("processed", [])
     if processed:
         for entry in processed:

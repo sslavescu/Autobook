@@ -17,17 +17,14 @@ def _local(y, mo, d, h=0, mi=0):
     return datetime(y, mo, d, h, mi, tzinfo=TZ)
 
 
-def _future_booking_message(message_id="m1", days_ahead=30, cost="5.00"):
-    """A ball-machine booking email dated in the future, so the PIN window is valid."""
+def _future_booking_message(message_id="m1", days_ahead=30):
+    """An accessory booking email dated in the future, so the PIN window is valid."""
     import base64
     from datetime import timedelta
 
     when = datetime.now(TZ) + timedelta(days=days_ahead)
     date_line = f"9:00 - 10:00 am , {when:%A} {when.day} {when:%B} {when.year}"
-    text = (
-        f"Date: {date_line}\nPlayer 1: Dave Dennehy\nPlayer 2: Ball Machine\n"
-        f"Cost of Booking: €{cost}\n"
-    )
+    text = f"Hi Dave,\n\nDate: {date_line}\nPlayer 1: Dave Dennehy\n"
     body = base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
     return {
         "id": message_id, "threadId": "t1",
@@ -57,21 +54,33 @@ def _add_member(conn, member_id, full_name, dedupe_hash):
     conn.commit()
 
 
-def test_pin_validity_end_is_end_of_booking_month():
-    # booking on 13 June -> PIN valid until 1 July midnight (covers all of June)
-    end = pin_validity_end(_local(2026, 6, 13, 9), "2099-12-31", TZ)
-    assert end.isoformat() == "2026-07-01T00:00:00+01:00"
+def test_pin_validity_end_is_start_plus_pin_valid_days():
+    end = pin_validity_end(_local(2026, 6, 13, 9), 7, "2099-12-31", TZ)
+    assert end.isoformat() == "2026-06-20T09:00:00+01:00"
 
 
-def test_pin_validity_end_uses_bookings_own_month():
-    # a booking in July -> end of July, even if run in June
-    end = pin_validity_end(_local(2026, 7, 2, 10), "2099-12-31", TZ)
-    assert end.isoformat() == "2026-08-01T00:00:00+01:00"
+def test_pin_validity_end_capped_at_end_of_membership_expiry_day():
+    # 7 days would reach 20 June, but the membership ends on the 17th
+    end = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-06-17", TZ)
+    assert end.isoformat() == "2026-06-17T23:59:00+01:00"
 
 
-def test_pin_validity_end_capped_by_renewal():
-    end = pin_validity_end(_local(2026, 6, 13, 9), "2026-06-20", TZ)
-    assert end.isoformat() == "2026-06-20T00:00:00+01:00"
+def test_pin_validity_end_not_capped_when_membership_is_later():
+    end = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-06-30", TZ)
+    assert end.isoformat() == "2026-06-20T09:00:00+01:00"
+
+
+def test_pin_validity_end_membership_check_can_be_disabled():
+    end = pin_validity_end(
+        _local(2026, 6, 13, 9), 7, "2026-06-17", TZ, check_membership_expiry=False
+    )
+    assert end.isoformat() == "2026-06-20T09:00:00+01:00"
+
+
+def test_pin_validity_end_expired_membership_yields_empty_window():
+    # cap is before the start -> caller must not issue a PIN
+    end = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-01-01", TZ)
+    assert end < _local(2026, 6, 13, 9)
 
 
 def test_booking_period_from_parsed_times():
@@ -141,6 +150,7 @@ def test_dry_run_does_not_persist_placeholder_pin():
     cfg = SimpleNamespace(
         admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
         club_timezone="Europe/Dublin", dry_run=True,
+        pin_valid_days=7, check_membership_expiry=True,
     )
     gmail = SimpleNamespace(send_email=lambda **kw: None, mark_read=lambda *a, **k: None)
 
@@ -183,6 +193,7 @@ def test_stored_dry_run_pin_is_replaced_on_real_run():
     cfg = SimpleNamespace(
         admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
         club_timezone="Europe/Dublin", dry_run=False,
+        pin_valid_days=7, check_membership_expiry=True,
     )
     sent = []
     gmail = SimpleNamespace(
@@ -203,64 +214,6 @@ def test_stored_dry_run_pin_is_replaced_on_real_run():
     assert stored["padlock_pin"] == "987654321"
     assert DRY_RUN_PIN not in sent[-1]["body"]
     assert "987654321" in sent[-1]["body"]
-
-
-def _cost_case_status(msg):
-    """Run process_message with a matching member; igloohome must not be called."""
-    from types import SimpleNamespace
-
-    from src.handler import process_message
-    from src.member_repo import MemberRepository
-
-    conn = _in_memory_db()
-    conn.execute(
-        """INSERT INTO members (member_id, full_name, email, membership_expires_on,
-                                dedupe_hash)
-           VALUES ('1', 'Dave Dennehy', 'dave@example.com', '2099-12-31', 'h')"""
-    )
-    conn.commit()
-    cfg = SimpleNamespace(
-        admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
-        club_timezone="Europe/Dublin", dry_run=False,
-    )
-    sent = []
-    gmail = SimpleNamespace(
-        send_email=lambda **kw: sent.append(kw), mark_read=lambda *a, **k: None
-    )
-
-    def must_not_call(**kwargs):
-        raise AssertionError("no PIN may be generated for this booking")
-
-    igloo = SimpleNamespace(create_monthly_algopin=must_not_call)
-    status, _, _ = process_message(cfg, gmail, igloo, MemberRepository(conn), msg, conn)
-    return status, sent, conn
-
-
-def test_zero_cost_booking_gets_no_pin():
-    status, sent, conn = _cost_case_status(_future_booking_message(cost="0.00"))
-    assert status == "skipped_zero_cost"
-    assert sent == []  # silent: a free booking is not an error
-    stored = conn.execute("SELECT padlock_pin FROM members WHERE member_id='1'").fetchone()
-    assert stored["padlock_pin"] is None
-
-
-def test_missing_cost_line_escalates_to_admin():
-    msg = _future_booking_message()
-    # strip the cost line to simulate a changed email format
-    import base64
-
-    payload = msg["payload"]["body"]["data"]
-    text = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode()
-    stripped = "\n".join(
-        line for line in text.splitlines() if "Cost of Booking" not in line
-    )
-    msg["payload"]["body"]["data"] = (
-        base64.urlsafe_b64encode(stripped.encode()).decode().rstrip("=")
-    )
-
-    status, sent, _ = _cost_case_status(msg)
-    assert status == "manual_review_cost_missing"
-    assert sent and sent[-1]["to"] == "admin@x"
 
 
 def test_next_variance_cycles():
@@ -288,80 +241,47 @@ def test_algopin_endpoint_selection(monkeypatch, tmp_path):
 
     monkeypatch.setattr(client, "_request", fake_request)
 
-    # 30 days -> daily endpoint; start is hour-aligned and the end carries the
-    # same hour, as the daily endpoint requires.
-    client.create_monthly_algopin(
-        "dev", "Member", NOW, NOW + timedelta(days=30), now=NOW
-    )
+    # PIN_VALID_DAYS is capped below 10, so real runs always take this path.
+    client.create_monthly_algopin("dev", "Member", NOW, NOW + timedelta(days=7))
+    path, payload = calls[-1]
+    assert path.endswith("/algopin/hourly")
+    assert payload["startDate"] == "2026-06-11T13:00:00+01:00"  # 12:00 UTC
+    assert payload["endDate"] == "2026-06-18T13:00:00+01:00"
+
+    # the daily endpoint is still selected for 29+ day windows
+    client.create_monthly_algopin("dev", "Member", NOW, NOW + timedelta(days=30))
     path, payload = calls[-1]
     assert path.endswith("/algopin/daily")
     assert payload["startDate"] == "2026-06-11T13:00:00+01:00"
     assert payload["endDate"] == "2026-07-11T13:00:00+01:00"
 
-    # 8 days (renewal-capped) -> hourly endpoint, hour-aligned
-    client.create_monthly_algopin(
-        "dev", "Member", NOW, NOW + timedelta(days=8), now=NOW
-    )
-    path, payload = calls[-1]
-    assert path.endswith("/algopin/hourly")
-    assert payload["startDate"] == "2026-06-11T13:00:00+01:00"  # 12:00 UTC floored
-    assert payload["endDate"] == "2026-06-19T13:00:00+01:00"
+
+def test_pin_start_is_the_hour_before_the_booking():
+    from src.igloohome_client import pin_start_for_booking
+
+    well_before = _local(2026, 8, 20)  # now, comfortably before the booking
+
+    # on the half hour -> top of that hour
+    assert pin_start_for_booking(
+        _local(2026, 8, 22, 21, 30), well_before, TZ
+    ) == _local(2026, 8, 22, 21, 0)
+
+    # exactly on the hour -> a full hour earlier
+    assert pin_start_for_booking(
+        _local(2026, 8, 22, 21, 0), well_before, TZ
+    ) == _local(2026, 8, 22, 20, 0)
+
+    assert pin_start_for_booking(
+        _local(2026, 8, 22, 6, 45), well_before, TZ
+    ) == _local(2026, 8, 22, 6, 0)
 
 
-def test_algopin_starts_at_top_of_hour_before_booking(monkeypatch, tmp_path):
-    """21:30 booking -> PIN starts 21:00 same day; 21:00 booking -> 21:00."""
-    import json
+def test_pin_start_never_precedes_now():
+    from src.igloohome_client import pin_start_for_booking
 
-    from src.igloohome_client import IgloohomeClient
-
-    creds = tmp_path / "creds.json"
-    creds.write_text(json.dumps({"client_id": "id", "client_secret": "secret"}))
-    client = IgloohomeClient(
-        base_url="http://unused", credentials_path=str(creds),
-        timezone_name="Europe/Dublin",
-    )
-    calls = []
-    monkeypatch.setattr(
-        client, "_request", lambda m, p, **k: calls.append((p, k["json"])) or {"pin": "1"}
-    )
-
-    month_end = _local(2026, 9, 1)
-    for booking_start, expected in (
-        (_local(2026, 8, 22, 21, 30), "2026-08-22T21:00:00+01:00"),
-        (_local(2026, 8, 22, 21, 0), "2026-08-22T21:00:00+01:00"),
-        (_local(2026, 8, 22, 9, 0), "2026-08-22T09:00:00+01:00"),
-        (_local(2026, 8, 22, 6, 45), "2026-08-22T06:00:00+01:00"),
-    ):
-        client.create_monthly_algopin(
-            "dev", "Member", booking_start, month_end, now=_local(2026, 8, 1)
-        )
-        _, payload = calls[-1]
-        assert payload["startDate"] == expected
-
-
-def test_algopin_past_start_clamped_to_now(monkeypatch, tmp_path):
-    import json
-    from datetime import timedelta
-
-    from src.igloohome_client import IgloohomeClient
-
-    creds = tmp_path / "creds.json"
-    creds.write_text(json.dumps({"client_id": "id", "client_secret": "secret"}))
-    client = IgloohomeClient(
-        base_url="http://unused", credentials_path=str(creds),
-        timezone_name="Europe/Dublin",
-    )
-    calls = []
-    monkeypatch.setattr(
-        client, "_request", lambda m, p, **k: calls.append((p, k["json"])) or {"pin": "1"}
-    )
-
-    # Booking start a week in the past, end still well in the future.
-    past_start = NOW - timedelta(days=7)
-    client.create_monthly_algopin(
-        "dev", "Member", past_start, NOW + timedelta(days=30), now=NOW
-    )
-    _, payload = calls[-1]
-    # Start is NOW + buffer floored to the hour (13:10 -> 13:00 Dublin),
-    # not the past start's date (4 June).
-    assert payload["startDate"] == "2026-06-11T13:00:00+01:00"
+    booking = _local(2026, 8, 22, 21, 0)
+    # now is inside the hour before the booking, so 20:00 has passed:
+    # fall back to the booking's own hour rather than starting in the past
+    assert pin_start_for_booking(
+        booking, _local(2026, 8, 22, 20, 30), TZ
+    ) == _local(2026, 8, 22, 21, 0)

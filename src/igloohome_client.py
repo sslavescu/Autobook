@@ -1,7 +1,7 @@
 import json
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -12,9 +12,22 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_AUTH_URL = "https://auth.igloohome.co/oauth2/token"
 
-# Buffer added when clamping a past start to now, so the PIN start is not
-# already stale by the time igloohome processes the request.
-START_BUFFER_MINUTES = 10
+
+def pin_start_for_booking(
+    booking_start: datetime, now: datetime, tz: ZoneInfo
+) -> datetime:
+    """The PIN start: the whole hour strictly before the booking starts.
+
+    21:30 booking -> 21:00; a 21:00 booking starts the PIN an hour early, at
+    20:00, so the member can always get in ahead of their slot. If that hour has
+    already passed, fall back to the booking's own hour instead.
+    """
+    local = booking_start.astimezone(tz)
+    on_the_hour = local.replace(minute=0, second=0, microsecond=0)
+    preferred = on_the_hour - timedelta(hours=1) if on_the_hour == local else on_the_hour
+    if preferred < now:
+        preferred = on_the_hour
+    return preferred
 
 
 def _load_credentials(credentials_path: str) -> dict:
@@ -145,27 +158,11 @@ class IgloohomeClient:
         valid_from: datetime,
         valid_until: datetime,
         variance: int = 1,
-        now: datetime | None = None,
     ) -> GeneratedPin:
         if variance not in (1, 2, 3):
             raise ValueError(f"variance must be 1, 2 or 3, got {variance}")
-        # Never start a PIN in the past: a booking whose start has already
-        # passed should not produce an algoPIN dated earlier than now. Clamp the
-        # start to now + a small buffer (so it is not already stale by the time
-        # the API processes it) before aligning to the day/hour boundary.
-        now = now or datetime.now(timezone.utc)
-        if valid_from < now:
-            buffered = now + timedelta(minutes=START_BUFFER_MINUTES)
-            logger.info(
-                "algoPIN start %s is in the past; using now + %d min (%s) instead",
-                valid_from.isoformat(),
-                START_BUFFER_MINUTES,
-                buffered.isoformat(),
-            )
-            valid_from = buffered
-        # The PIN starts at the top of the hour at or before the booking start
-        # (21:30 -> 21:00, 21:00 -> 21:00), on the booking's own date. Both
-        # endpoints take hh:00:00 timestamps, so hour alignment suits both.
+        # valid_from is already the PIN start chosen by the caller
+        # (pin_start_for_booking); align_to_hours only enforces hh:00:00.
         start, end = align_to_hours(valid_from, valid_until, self.tz)
         if end <= start:
             raise ValueError(f"algoPIN validity is empty: {start} -> {end}")

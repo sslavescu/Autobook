@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project does
 
-Linux VM app that polls a Gmail account for ball-machine booking emails, fuzzy-matches the booker's name to a club member in SQLite, generates a one-month igloohome algoPIN via their API, and emails the PIN to the member. Runs on a systemd timer every 10 minutes. Unmatched or unparseable bookings are forwarded to an admin email for manual review. Deployment (Oracle Cloud free-tier VM) is documented in `DEPLOY.md`.
+Linux VM app that polls a Gmail account for ball-machine booking emails, fuzzy-matches the booker's name to a club member in SQLite, generates a short-lived igloohome algoPIN (`PIN_VALID_DAYS`) via their API, and emails the PIN to the member. Runs on a systemd timer every 10 minutes. Unmatched or unparseable bookings are forwarded to an admin email for manual review. Deployment (Oracle Cloud free-tier VM) is documented in `DEPLOY.md`.
 
 ## Commands
 
@@ -62,7 +62,7 @@ systemd timer (every 10 min) -> run.py -> Gmail API -> SQLite -> igloohome API -
 3. Loads Gmail OAuth credentials from local files; runs consent flow on first run (`src/gmail_client.py`)
 4. Loads igloohome OAuth2 client credentials (`src/igloohome_client.py`)
 5. Searches Gmail for unread booking emails (`src/gmail_client.py`)
-6. For each email, checks it is a ball-machine booking (subject `Court Booking Confirmation`, any of Player 1–4 is "Ball Machine"/"Ball M") and parses Player 1 plus the `Date:` line (`src/booking_parser.py`). Real emails use \r\n line endings and names may contain non-ASCII characters.
+6. For each email, checks it is a ball-machine **accessory** booking (`is_accessory_booking`: subject `Court Booking Confirmation`, greeting is not "Hi Ball", and no Player 1–4 is "Ball Machine"/"Ball M") and parses Player 1, the `Date:` line, and the `Cost of Booking` amount into `Booking.cost` (`src/booking_parser.py`). The cost is parsed only; it does not gate PIN issuance. The old format, where the machine was booked as a player, is skipped with no PIN (`skipped_not_accessory_booking`); only the accessory format is supported for PIN generation. Real emails use \r\n line endings and names may contain non-ASCII characters.
 7. Fuzzy-matches name against SQLite members using rapidfuzz (`src/member_repo.py`)
 8. Generates or reuses an igloohome algoPIN (`src/igloohome_client.py`)
 9. Emails the PIN to the member using `templates/pin_email.txt` (placeholders `{first_name}`, `{pin}`, `{expiry}`); records a privacy-preserving audit hash (`src/processed_repo.py`)
@@ -82,8 +82,9 @@ Test-mode env vars: `DRY_RUN=true` skips igloohome calls; `EMAIL_REDIRECT_TO=<ad
 
 - **No full email storage**: only a SHA-256 hash of the Gmail message ID is persisted in `processed_emails`, along with extracted booking metadata.
 - **PIN reuse**: a stored `padlock_pin` is reused only if it *covers* the booking's parsed `[start, end]` period (`Member.padlock_pin_covers`); otherwise a new PIN is generated. Both `padlock_pin_valid_from` and `padlock_pin_valid_until` are stored because a PIN can start in the future (at the booking time).
-- **New PIN validity**: from the booking's start time to the end of the booking's calendar month, capped at the member's renewal date (local midnight, so the PIN dies before the renewal day). A past booking start is clamped to now + `START_BUFFER_MINUTES` by the igloohome client. Duration 29+ days → daily algoPIN endpoint (midnight-aligned); under 29 days → hourly endpoint (hour-aligned). If the renewal date can't cover the booking → no PIN, admin alert. Variance cycles 1→2→3 (stored in `app_state`).
-- **Cost gate**: the confirmation must contain `Cost of Booking:` with a non-zero amount before any PIN is issued (reused or new). Zero cost → `skipped_zero_cost`, no email. Missing line → admin alert (`manual_review_cost_missing`).
+- **PIN start** (`pin_start_for_booking`): the whole hour strictly before the booking start — 21:30 → 21:00, and 21:00 → 20:00 so the member can get in ahead of the slot. If that hour has already passed, falls back to the booking's own hour.
+- **New PIN validity**: PIN start + `PIN_VALID_DAYS`. That value must be 1-9 days or `load_config` raises `ConfigError` and `run.py` exits 2. When `CHECK_MEMBERSHIP_EXPIRY` is true (default) the end is capped at 23:59 on the membership expiry day; if that leaves no window, no PIN is issued and the admin is alerted (`manual_review_membership_expired`).
+- **Endpoint**: duration 29+ days → daily algoPIN endpoint, under 29 days → hourly. Since `PIN_VALID_DAYS` is capped below 10, real runs always use hourly; the daily branch remains for completeness. Verified against the live API on 2026-08-06: the hourly endpoint accepts 1, 5 and 9 day durations, so the whole allowed range works (the docs only state 29-367 days for *daily*). Variance cycles 1→2→3 (stored in `app_state`).
 - **Duplicate names**: members get a `dedupe_hash` (name/address/DOB/booking-PIN) at import; if a booked name matches several distinct members, the booking goes to admin review instead of guessing.
 - **Fuzzy matching**: `member_repo.py` scans all active members and uses `rapidfuzz.process.extractOne` with a configurable `FUZZY_NAME_THRESHOLD` (default 90).
 - **Import script upserts**: `scripts/import_members.py` upserts members without overwriting existing `padlock_pin` fields; members absent from the export are deleted; the ball machine's own booking account is excluded.

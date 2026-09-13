@@ -1,6 +1,6 @@
 # CIAC Ball Machine Padlock PIN Automation
 
-App that polls a Gmail account for ball-machine booking emails, matches the booking name to a member, generates a one-month igloohome algoPIN through the API, stores it in SQLite, and emails the member. Runs on a Linux VM via a systemd timer.
+App that polls a Gmail account for ball-machine booking emails, matches the booking name to a member, generates a short-lived igloohome algoPIN (`PIN_VALID_DAYS`) through the API, stores it in SQLite, and emails the member. Runs on a Linux VM via a systemd timer.
 
 ## Architecture
 
@@ -93,31 +93,30 @@ sudo systemctl enable --now pingen.timer
 ## Booking email parsing
 
 Booking confirmations come from `noreply@ebookingonline.net` with subjects
-starting `Court Booking Confirmation:`. The body looks like:
+starting `Court Booking Confirmation:`. The ball machine is booked as an
+accessory, so the confirmation is addressed to the member who booked it and
+needs no other players:
 
 ```text
-Hi Ball,
+Hi Sorin,
 
 This is to confirm your court booking at CIAC as follows:
 
-        Ref:        171392,171393
+        Ref:        181973
         Sport:      Tennis
-        Court:      Court 6
-        Date:       9:00 - 10:00 am , Saturday 13th June 2026
-        Player 1:   Elle Marie Meñosa
-        Player 2:   Ball Machine
+        Court:      Court 5
+        Date:       10:30 - 11:00 am , Sunday 13th September 2026
+        Player 1:   Sorin Slavescu
 ```
 
-A booking is treated as a ball-machine booking when any of `Player 1`–`Player 4`
-is `Ball Machine` (or the older account name `Ball M`). The PIN is issued to
-`Player 1`. The email must also contain a `Cost of Booking:` line with a
-non-zero amount — a free booking is not chargeable and gets no PIN
-(status `skipped_zero_cost`). If the line is missing entirely the admin is
-alerted, since that suggests the email format changed. The `Date:` line is parsed into `booking_start`/`booking_end`
-(am/pm inferred for ranges like `11:30 - 1:00 pm`). Cancellation emails use the
-subject `Court Cancellation Confirmation` and are excluded by the subject
-filter. Booking confirmations without a ball-machine player are skipped
-silently (status `skipped_not_ball_machine`).
+The PIN is issued to `Player 1`. The `Date:` line is parsed into
+`booking_start`/`booking_end` (am/pm inferred for ranges like `11:30 - 1:00 pm`).
+
+Confirmations in the earlier format, where the machine was booked as a player
+(greeted `Hi Ball`, or listing `Ball Machine` / `Ball M` among `Player 1`–`Player 4`),
+are not accessory bookings. They are skipped with no PIN
+(status `skipped_not_accessory_booking`). Cancellation emails use the subject
+`Court Cancellation Confirmation` and are excluded by the subject filter.
 
 ## Stored booking data
 
@@ -154,13 +153,14 @@ Replace this path and payload with the exact endpoint from your igloohome API ac
 - Ignores already-processed Gmail messages using the stored `message_hash`.
 - Reuses the stored padlock PIN only when it covers the booking's start–end
   period; otherwise issues a new one.
-- A new PIN runs from the booking's start time to the end of the booking's
-  calendar month, capped at the member's renewal date (midnight, so the PIN
-  dies before the renewal day). A booking start in the past is clamped to a few
-  minutes from now. PINs of 29+ days use the daily algoPIN endpoint; shorter
-  ones use the hourly endpoint.
-- If the renewal date is too soon to cover the booking, no PIN is issued and
-  the admin is alerted.
+- A new PIN starts at the whole hour before the booking (21:30 → 21:00; a
+  21:00 booking starts at 20:00 so the member can get in early), falling back
+  to the booking's own hour if that hour has already passed.
+- It stays valid for `PIN_VALID_DAYS` (1–9; the app refuses to start outside
+  that range), capped at 23:59 on the member's membership expiry day when
+  `CHECK_MEMBERSHIP_EXPIRY` is enabled.
+- If the membership leaves no valid window, no PIN is issued and the admin is
+  alerted.
 - algoPIN variance cycles 1 → 2 → 3 across PIN creations.
 - Members sharing a name with another distinct member (identity hash from
   name/address/DOB/PIN) are never guessed; the admin is asked to issue manually.
