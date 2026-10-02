@@ -180,6 +180,7 @@ def process_message(
         member.padlock_pin_valid_from,
         member.padlock_pin_valid_until,
     )
+    membership_warning = None
     reusable = member.padlock_pin_covers(period_start, period_end)
     if reusable and member.padlock_pin == DRY_RUN_PIN and not cfg.dry_run:
         # Left over from a dry run against this database: it is not a real PIN,
@@ -198,30 +199,25 @@ def process_message(
         valid_until = datetime.fromisoformat(
             member.padlock_pin_valid_until.replace("Z", "+00:00")
         )
+        membership_warning = stored_pin_membership_warning(
+            valid_from,
+            valid_until,
+            member.membership_expires_on,
+            tz,
+            cfg.check_membership_expiry,
+        )
     else:
-        # The PIN opens on the hour before the booking and lasts PIN_VALID_DAYS,
-        # never outliving the membership.
+        # The PIN opens on the hour before the booking and lasts PIN_VALID_DAYS.
+        # The membership can shorten it but never blocks it; the admin is warned
+        # instead (see pin_validity_end).
         valid_from = pin_start_for_booking(period_start, now, tz)
-        valid_until = pin_validity_end(
+        valid_until, membership_warning = pin_validity_end(
             valid_from,
             cfg.pin_valid_days,
             member.membership_expires_on,
             tz,
             cfg.check_membership_expiry,
         )
-        if valid_until <= valid_from:
-            gmail.send_email(
-                to=cfg.admin_email,
-                subject="Ball machine booking - membership expired",
-                body=(
-                    f"{member.full_name} (member {member.member_id}) booked the ball "
-                    f"machine for {booking.booking_period}, but their membership "
-                    f"expiry date ({member.membership_expires_on}) leaves no valid "
-                    "period for a PIN. No PIN was issued; handle manually or ask "
-                    "them to renew."
-                ),
-            )
-            return "manual_review_membership_expired", booking, member
         if cfg.dry_run:
             pin = DRY_RUN_PIN
         else:
@@ -248,6 +244,28 @@ def process_message(
         thread_id=booking.thread_id,
         in_reply_to=booking.message_id_header,
     )
+
+    if membership_warning:
+        logger.info(
+            "%s: membership warning for %s - %s",
+            message_hash[:12],
+            member.full_name,
+            membership_warning,
+        )
+        gmail.send_email(
+            to=cfg.admin_email,
+            subject="Ball machine PIN issued - membership warning",
+            body=(
+                f"{membership_warning}\n\n"
+                f"Member: {member.full_name} (member {member.member_id})\n"
+                f"Booking: {booking.booking_period}\n"
+                f"PIN valid: {valid_from.isoformat()} to {valid_until.isoformat()}\n\n"
+                "The PIN was sent to the member as usual. Follow up on the "
+                "membership if needed."
+            ),
+        )
+        return "sent_pin_membership_warning", booking, member
+
     return "sent_pin", booking, member
 
 
@@ -273,27 +291,86 @@ def _parse_local(iso: str | None, tz: ZoneInfo) -> datetime | None:
     return dt.replace(tzinfo=tz) if dt.tzinfo is None else dt
 
 
+def _membership_cap(
+    membership_expires_on: str | None, tz: ZoneInfo
+) -> tuple[datetime | None, str | None]:
+    """(cap, warning): the moment a membership ends, or why it can't be compared."""
+    if not membership_expires_on:
+        return None, "No membership expiry date found for this member."
+    try:
+        expiry_day = datetime.strptime(membership_expires_on, "%Y-%m-%d")
+    except ValueError:
+        return None, (
+            f"Membership expiry date could not be read ({membership_expires_on!r})."
+        )
+    return expiry_day.replace(hour=23, minute=59, tzinfo=tz), None
+
+
 def pin_validity_end(
     pin_start: datetime,
     pin_valid_days: int,
     membership_expires_on: str | None,
     tz: ZoneInfo,
     check_membership_expiry: bool = True,
-) -> datetime:
-    """PIN start + PIN_VALID_DAYS, never past the membership expiry date.
+) -> tuple[datetime, str | None]:
+    """Work out when a new PIN should stop working, and whether to warn the admin.
 
-    When the window would outlast the membership, it is cut back to the end of
-    the expiry day (23:59 local). Disable the cap with CHECK_MEMBERSHIP_EXPIRY.
+    The PIN runs for PIN_VALID_DAYS, shortened to the end of the membership
+    expiry day (23:59 local) when that falls inside the window. The membership
+    never blocks a PIN: if it has already expired the full window is issued
+    anyway and the warning says the PIN runs beyond the membership.
+
+    Returns (valid_until, warning); warning is None when the membership
+    comfortably covers the PIN. CHECK_MEMBERSHIP_EXPIRY=false ignores the
+    membership entirely - no shortening and no warning.
     """
     end = pin_start + relativedelta(days=pin_valid_days)
-    if not check_membership_expiry or not membership_expires_on:
-        return end
-    try:
-        expiry_day = datetime.strptime(membership_expires_on, "%Y-%m-%d")
-    except ValueError:
-        return end
-    cap = expiry_day.replace(hour=23, minute=59, tzinfo=tz)
-    return cap if end > cap else end
+    if not check_membership_expiry:
+        return end, None
+    cap, warning = _membership_cap(membership_expires_on, tz)
+    if cap is None:
+        return end, warning
+    if cap <= pin_start:
+        return end, (
+            f"Membership expired on {membership_expires_on}. The PIN was issued "
+            "anyway and runs beyond the end of the membership."
+        )
+    if cap < end:
+        return cap, (
+            f"Membership expires on {membership_expires_on}, so the PIN was "
+            "shortened to end then."
+        )
+    return end, None
+
+
+def stored_pin_membership_warning(
+    valid_from: datetime,
+    valid_until: datetime,
+    membership_expires_on: str | None,
+    tz: ZoneInfo,
+    check_membership_expiry: bool = True,
+) -> str | None:
+    """Whether reusing an already-issued PIN warrants a warning.
+
+    The window was fixed when the PIN was issued, so it can't be shortened now;
+    a membership that has lapsed since then is only reportable.
+    """
+    if not check_membership_expiry:
+        return None
+    cap, warning = _membership_cap(membership_expires_on, tz)
+    if cap is None:
+        return warning
+    if cap <= valid_from:
+        return (
+            f"Membership expired on {membership_expires_on}. The PIN being reused "
+            "runs beyond the end of the membership."
+        )
+    if cap < valid_until:
+        return (
+            f"Membership expires on {membership_expires_on}, before the reused "
+            "PIN stops working."
+        )
+    return None
 
 
 def message_as_text(message: InboundEmail) -> str:

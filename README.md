@@ -165,10 +165,15 @@ Replace this path and payload with the exact endpoint from your igloohome API ac
   21:00 booking starts at 20:00 so the member can get in early), falling back
   to the booking's own hour if that hour has already passed.
 - It stays valid for `PIN_VALID_DAYS` (1–11, since bookings open at most 10 days
-  ahead; the app refuses to start outside that range), capped at 23:59 on the member's membership expiry day when
-  `CHECK_MEMBERSHIP_EXPIRY` is enabled.
-- If the membership leaves no valid window, no PIN is issued and the admin is
-  alerted.
+  ahead; the app refuses to start outside that range), shortened to 23:59 on the
+  member's membership expiry day when that falls inside the window.
+- **Membership never blocks a PIN.** If the membership has already expired, is
+  unreadable, or is missing entirely, the member still gets their PIN and the
+  admin receives a warning email instead (`sent_pin_membership_warning`). This is
+  checked both when a PIN is issued and when a stored PIN is reused, so a
+  membership that lapses later is warned about on every subsequent booking.
+  `CHECK_MEMBERSHIP_EXPIRY=false` ignores the membership completely: no
+  shortening and no warning.
 - algoPIN variance cycles 1 → 2 → 3 across PIN creations.
 - Members sharing a name with another distinct member (identity hash from
   name/address/DOB/PIN) are never guessed; the admin is asked to issue manually.

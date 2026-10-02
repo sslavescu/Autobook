@@ -49,32 +49,51 @@ def _add_member(conn, member_id, full_name, dedupe_hash):
 
 
 def test_pin_validity_end_is_start_plus_pin_valid_days():
-    end = pin_validity_end(_local(2026, 6, 13, 9), 7, "2099-12-31", TZ)
+    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, "2099-12-31", TZ)
     assert end.isoformat() == "2026-06-20T09:00:00+01:00"
+    assert warning is None
 
 
-def test_pin_validity_end_capped_at_end_of_membership_expiry_day():
+def test_pin_validity_end_shortened_when_membership_expires_mid_window():
     # 7 days would reach 20 June, but the membership ends on the 17th
-    end = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-06-17", TZ)
+    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-06-17", TZ)
     assert end.isoformat() == "2026-06-17T23:59:00+01:00"
+    assert "shortened" in warning and "2026-06-17" in warning
 
 
 def test_pin_validity_end_not_capped_when_membership_is_later():
-    end = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-06-30", TZ)
+    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-06-30", TZ)
     assert end.isoformat() == "2026-06-20T09:00:00+01:00"
+    assert warning is None
+
+
+def test_expired_membership_still_gets_a_full_pin_with_a_warning():
+    """The membership never blocks a PIN; the admin is warned instead."""
+    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-01-01", TZ)
+    assert end.isoformat() == "2026-06-20T09:00:00+01:00"  # full PIN_VALID_DAYS
+    assert "expired on 2026-01-01" in warning
+    assert "beyond the end of the membership" in warning
+
+
+def test_missing_membership_expiry_date_warns():
+    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, None, TZ)
+    assert end.isoformat() == "2026-06-20T09:00:00+01:00"
+    assert warning == "No membership expiry date found for this member."
+
+
+def test_unreadable_membership_expiry_date_warns():
+    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, "31/12/2026", TZ)
+    assert end.isoformat() == "2026-06-20T09:00:00+01:00"
+    assert "could not be read" in warning
 
 
 def test_pin_validity_end_membership_check_can_be_disabled():
-    end = pin_validity_end(
-        _local(2026, 6, 13, 9), 7, "2026-06-17", TZ, check_membership_expiry=False
+    # false = ignore the membership entirely: no shortening, no warning
+    end, warning = pin_validity_end(
+        _local(2026, 6, 13, 9), 7, "2026-01-01", TZ, check_membership_expiry=False
     )
     assert end.isoformat() == "2026-06-20T09:00:00+01:00"
-
-
-def test_pin_validity_end_expired_membership_yields_empty_window():
-    # cap is before the start -> caller must not issue a PIN
-    end = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-01-01", TZ)
-    assert end < _local(2026, 6, 13, 9)
+    assert warning is None
 
 
 def test_booking_period_from_parsed_times():
@@ -380,3 +399,139 @@ def test_message_as_text_flags_empty_body():
         message_id_header=None, text="",
     )
     assert "no readable text" in message_as_text(email)
+
+
+def _process_booking_for_member(membership_expires_on, caplog=None):
+    """Run a real accessory booking for a member with the given expiry date."""
+    import logging
+    from types import SimpleNamespace
+
+    from src.handler import process_message
+    from src.member_repo import MemberRepository
+
+    conn = _in_memory_db()
+    conn.execute(
+        """INSERT INTO members (member_id, full_name, email, membership_expires_on,
+                                dedupe_hash)
+           VALUES ('1', 'Dave Dennehy', 'dave@example.com', ?, 'h')""",
+        (membership_expires_on,),
+    )
+    conn.commit()
+    cfg = SimpleNamespace(
+        admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
+        club_timezone="Europe/Dublin", dry_run=False,
+        pin_valid_days=7, check_membership_expiry=True,
+    )
+    sent = []
+    gmail = SimpleNamespace(
+        send_email=lambda **kw: sent.append(kw), mark_read=lambda *a, **k: None
+    )
+    igloo = SimpleNamespace(
+        create_monthly_algopin=lambda **kw: SimpleNamespace(
+            code="987654321", valid_from=kw["valid_from"], valid_until=kw["valid_until"]
+        )
+    )
+    context = caplog.at_level(logging.INFO, logger="src.handler") if caplog else None
+    if context:
+        with context:
+            result = process_message(
+                cfg, gmail, igloo, MemberRepository(conn), _future_booking_message(), conn
+            )
+    else:
+        result = process_message(
+            cfg, gmail, igloo, MemberRepository(conn), _future_booking_message(), conn
+        )
+    return result[0], sent
+
+
+def test_expired_membership_still_sends_the_pin_and_warns_the_admin(caplog):
+    status, sent = _process_booking_for_member("2020-01-01", caplog)
+
+    assert status == "sent_pin_membership_warning"
+    # the member is served first and exactly as usual
+    member_email, admin_email = sent
+    assert member_email["to"] == "dave@example.com"
+    assert "987654321" in member_email["body"]
+    # the admin is warned, without the PIN in the warning
+    assert admin_email["to"] == "admin@x"
+    assert "membership warning" in admin_email["subject"]
+    assert "expired on 2020-01-01" in admin_email["body"]
+    assert "987654321" not in admin_email["body"]
+    assert "membership warning for Dave Dennehy" in caplog.text
+
+
+def test_missing_membership_expiry_date_still_sends_the_pin_and_warns():
+    status, sent = _process_booking_for_member(None)
+    assert status == "sent_pin_membership_warning"
+    assert [m["to"] for m in sent] == ["dave@example.com", "admin@x"]
+    assert "No membership expiry date found" in sent[1]["body"]
+
+
+def test_valid_membership_sends_the_pin_with_no_warning():
+    status, sent = _process_booking_for_member("2099-12-31")
+    assert status == "sent_pin"
+    assert [m["to"] for m in sent] == ["dave@example.com"]
+
+
+def test_stored_pin_membership_warning_cases():
+    from src.handler import stored_pin_membership_warning
+
+    window = (_local(2026, 6, 13, 9), _local(2026, 6, 20, 9))
+
+    # membership outlasts the reused PIN -> nothing to say
+    assert stored_pin_membership_warning(*window, "2026-07-31", TZ) is None
+    # membership ends inside the window: the PIN can't be shortened now
+    assert "before the reused PIN stops working" in stored_pin_membership_warning(
+        *window, "2026-06-17", TZ
+    )
+    # lapsed since the PIN was issued
+    assert "runs beyond the end of the membership" in stored_pin_membership_warning(
+        *window, "2026-01-01", TZ
+    )
+    assert stored_pin_membership_warning(*window, None, TZ).startswith("No membership")
+    # the flag still switches the whole check off
+    assert stored_pin_membership_warning(
+        *window, "2026-01-01", TZ, check_membership_expiry=False
+    ) is None
+
+
+def test_reused_pin_for_lapsed_member_warns_without_calling_igloohome():
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from src.handler import process_message
+    from src.member_repo import MemberRepository
+
+    # a PIN issued while the membership was valid, still covering the booking
+    conn = _in_memory_db()
+    conn.execute(
+        """INSERT INTO members (member_id, full_name, email, membership_expires_on,
+                                dedupe_hash, padlock_pin,
+                                padlock_pin_valid_from, padlock_pin_valid_until)
+           VALUES ('1', 'Dave Dennehy', 'dave@example.com', '2026-01-01', 'h',
+                   '111222333', ?, ?)""",
+        (
+            (datetime.now(TZ) - timedelta(days=1)).isoformat(),
+            (datetime.now(TZ) + timedelta(days=365)).isoformat(),
+        ),
+    )
+    conn.commit()
+    cfg = SimpleNamespace(
+        admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
+        club_timezone="Europe/Dublin", dry_run=False,
+        pin_valid_days=7, check_membership_expiry=True,
+    )
+    sent = []
+    gmail = SimpleNamespace(
+        send_email=lambda **kw: sent.append(kw), mark_read=lambda *a, **k: None
+    )
+
+    status, _, _ = process_message(
+        cfg, gmail, _igloo_must_not_be_called(), MemberRepository(conn),
+        _future_booking_message(), conn,
+    )
+
+    assert status == "sent_pin_membership_warning"
+    assert [m["to"] for m in sent] == ["dave@example.com", "admin@x"]
+    assert "111222333" in sent[0]["body"]  # the member still gets the stored PIN
+    assert "expired on 2026-01-01" in sent[1]["body"]
