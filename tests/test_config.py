@@ -1,32 +1,32 @@
 import pytest
 
-from src.config import MAX_PIN_VALID_DAYS, ConfigError, _pin_valid_days
+from src.config import MAX_PIN_VALID_HOURS, ConfigError, _pin_valid_hours
 
 
-@pytest.mark.parametrize("value, expected", [("1", 1), ("7", 7), ("11", 11)])
-def test_pin_valid_days_accepts_1_to_11(monkeypatch, value, expected):
-    monkeypatch.setenv("PIN_VALID_DAYS", value)
-    assert _pin_valid_days() == expected
+@pytest.mark.parametrize("value, expected", [("1", 1), ("12", 12), ("24", 24)])
+def test_pin_valid_hours_accepts_1_to_24(monkeypatch, value, expected):
+    monkeypatch.setenv("PIN_VALID_HOURS", value)
+    assert _pin_valid_hours() == expected
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "12", "30"])
-def test_pin_valid_days_rejects_out_of_range(monkeypatch, value):
-    monkeypatch.setenv("PIN_VALID_DAYS", value)
-    with pytest.raises(ConfigError, match="between 1 and 11"):
-        _pin_valid_days()
+@pytest.mark.parametrize("value", ["0", "-1", "25", "168"])
+def test_pin_valid_hours_rejects_out_of_range(monkeypatch, value):
+    monkeypatch.setenv("PIN_VALID_HOURS", value)
+    with pytest.raises(ConfigError, match="between 1 and 24"):
+        _pin_valid_hours()
 
 
-def test_pin_valid_days_rejects_non_integer(monkeypatch):
-    monkeypatch.setenv("PIN_VALID_DAYS", "seven")
+def test_pin_valid_hours_rejects_non_integer(monkeypatch):
+    monkeypatch.setenv("PIN_VALID_HOURS", "twelve")
     with pytest.raises(ConfigError, match="whole number"):
-        _pin_valid_days()
+        _pin_valid_hours()
 
 
-def test_pin_valid_days_defaults_to_7(monkeypatch):
-    monkeypatch.delenv("PIN_VALID_DAYS", raising=False)
-    assert _pin_valid_days() == 7
+def test_pin_valid_hours_defaults_to_12(monkeypatch):
+    monkeypatch.delenv("PIN_VALID_HOURS", raising=False)
+    assert _pin_valid_hours() == 12
 
 
-def test_max_covers_booking_horizon():
-    # bookings open 10 days ahead; the PIN may need to reach one day past that
-    assert MAX_PIN_VALID_DAYS == 11
+def test_max_keeps_pins_free_of_lock_activation():
+    # algoPINs lasting MORE than 24 hours must be activated on the lock
+    assert MAX_PIN_VALID_HOURS == 24

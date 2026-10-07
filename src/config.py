@@ -4,10 +4,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Bookings can be made at most 10 days in advance, so a PIN never needs to
-# last longer than 11 days. Anything longer is treated as a configuration
-# mistake and stops the application at startup.
-MAX_PIN_VALID_DAYS = 11
+# igloohome algoPINs that last MORE than 24 hours must be activated on the
+# lock (used within the first 24 hours of their validity). Keeping every PIN
+# at or below 24 hours means members never have to activate anything, so a
+# longer value is rejected at startup.
+MAX_PIN_VALID_HOURS = 23
 
 
 class ConfigError(Exception):
@@ -26,7 +27,7 @@ class Config:
     lock_id: str
     booking_sender_filter: str
     booking_subject_filter: str
-    pin_valid_days: int
+    pin_valid_hours: int
     check_membership_expiry: bool
     fuzzy_name_threshold: int
     max_process_attempts: int
@@ -35,18 +36,21 @@ class Config:
     dry_run: bool
 
 
-def _pin_valid_days() -> int:
-    raw = os.getenv("PIN_VALID_DAYS", "7")
+def _pin_valid_hours() -> int:
+    raw = os.getenv("PIN_VALID_HOURS", "12")
     try:
-        days = int(raw)
+        hours = int(raw)
     except ValueError:
-        raise ConfigError(f"PIN_VALID_DAYS must be a whole number, got {raw!r}") from None
-    if days < 1 or days > MAX_PIN_VALID_DAYS:
         raise ConfigError(
-            f"PIN_VALID_DAYS is {days}; it must be between 1 and "
-            f"{MAX_PIN_VALID_DAYS} days. Update the value in .env."
+            f"PIN_VALID_HOURS must be a whole number, got {raw!r}"
+        ) from None
+    if hours < 1 or hours > MAX_PIN_VALID_HOURS:
+        raise ConfigError(
+            f"PIN_VALID_HOURS is {hours}; it must be between 1 and "
+            f"{MAX_PIN_VALID_HOURS} hours, so the PIN never needs activating "
+            "on the lock. Update the value in .env."
         )
-    return days
+    return hours
 
 
 def load_config(env_path: str | None = None) -> Config:
@@ -80,7 +84,7 @@ def load_config(env_path: str | None = None) -> Config:
         booking_subject_filter=os.getenv(
             "BOOKING_SUBJECT_FILTER", "Court Booking Confirmation"
         ),
-        pin_valid_days=_pin_valid_days(),
+        pin_valid_hours=_pin_valid_hours(),
         check_membership_expiry=os.getenv("CHECK_MEMBERSHIP_EXPIRY", "true").lower()
         == "true",
         fuzzy_name_threshold=int(os.getenv("FUZZY_NAME_THRESHOLD", "90")),

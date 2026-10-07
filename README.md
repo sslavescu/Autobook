@@ -1,6 +1,6 @@
 # CIAC Ball Machine Padlock PIN Automation
 
-App that polls a Gmail account for ball-machine booking emails, matches the booking name to a member, generates a short-lived igloohome algoPIN (`PIN_VALID_DAYS`) through the API, stores it in SQLite, and emails the member. Runs on a Linux VM via a systemd timer.
+App that polls a Gmail account for ball-machine booking emails, matches the booking name to a member, generates a short-lived igloohome algoPIN (`PIN_VALID_HOURS`) through the API, stores it in SQLite, and emails the member. Runs on a Linux VM via a systemd timer.
 
 ## Architecture
 
@@ -159,19 +159,22 @@ Replace this path and payload with the exact endpoint from your igloohome API ac
 ## Safety behaviour
 
 - Ignores already-processed Gmail messages using the stored `message_hash`.
-- Reuses the stored padlock PIN only when it covers the booking's start–end
-  period; otherwise issues a new one.
+- Issues a **new PIN for every booking**, even if the member still holds a
+  valid one. Nothing is reused, so a PIN can never outlive the booking it was
+  issued for.
 - A new PIN starts at the whole hour before the booking (21:30 → 21:00; a
   21:00 booking starts at 20:00 so the member can get in early), falling back
   to the booking's own hour if that hour has already passed.
-- It stays valid for `PIN_VALID_DAYS` (1–11, since bookings open at most 10 days
-  ahead; the app refuses to start outside that range), shortened to 23:59 on the
-  member's membership expiry day when that falls inside the window.
+- It stays valid for `PIN_VALID_HOURS` (1–24; the app refuses to start outside
+  that range). Staying at or below 24 hours matters: algoPINs that last longer
+  must be **activated** on the lock within their first 24 hours, so members
+  would have to use them or lose them. Short PINs need no activation.
+- The PIN is shortened to 23:59 on the member's membership expiry day when that
+  falls inside the window.
 - **Membership never blocks a PIN.** If the membership has already expired, is
   unreadable, or is missing entirely, the member still gets their PIN and the
   admin receives a warning email instead (`sent_pin_membership_warning`). This is
-  checked both when a PIN is issued and when a stored PIN is reused, so a
-  membership that lapses later is warned about on every subsequent booking.
+  checked each time a PIN is issued.
   `CHECK_MEMBERSHIP_EXPIRY=false` ignores the membership completely: no
   shortening and no warning.
 - algoPIN variance cycles 1 → 2 → 3 across PIN creations.

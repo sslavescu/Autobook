@@ -170,7 +170,7 @@ class IgloohomeClient:
         if duration_days > 367:
             raise ValueError(
                 f"algoPIN duration must be at most 367 days, got {duration_days} "
-                "(check PIN_VALID_DAYS)"
+                "(check PIN_VALID_HOURS)"
             )
         kind = "hourly"
         if duration_days >= 29:

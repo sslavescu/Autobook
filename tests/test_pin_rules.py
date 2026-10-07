@@ -7,7 +7,7 @@ import pytest
 from src.db import _create_tables, next_variance
 from src.handler import booking_period, pin_validity_end
 from src.member_repo import AmbiguousMemberError, MemberRepository
-from src.models import Booking, Member
+from src.models import Booking
 
 TZ = ZoneInfo("Europe/Dublin")
 NOW = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
@@ -48,52 +48,56 @@ def _add_member(conn, member_id, full_name, dedupe_hash):
     conn.commit()
 
 
-def test_pin_validity_end_is_start_plus_pin_valid_days():
-    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, "2099-12-31", TZ)
-    assert end.isoformat() == "2026-06-20T09:00:00+01:00"
+def test_pin_validity_end_is_start_plus_pin_valid_hours():
+    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 12, "2099-12-31", TZ)
+    assert end.isoformat() == "2026-06-13T21:00:00+01:00"
     assert warning is None
 
 
 def test_pin_validity_end_shortened_when_membership_expires_mid_window():
-    # 7 days would reach 20 June, but the membership ends on the 17th
-    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-06-17", TZ)
-    assert end.isoformat() == "2026-06-17T23:59:00+01:00"
-    assert "shortened" in warning and "2026-06-17" in warning
-
-
-def test_pin_validity_end_not_capped_when_membership_is_later():
-    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-06-30", TZ)
-    assert end.isoformat() == "2026-06-20T09:00:00+01:00"
-    assert warning is None
+    # 12 hours from 20:00 would reach 08:00, but the membership ends at 23:59
+    end, warning = pin_validity_end(_local(2026, 6, 13, 20), 12, "2026-06-13", TZ)
+    assert end.isoformat() == "2026-06-13T23:59:00+01:00"
+    assert "shortened" in warning and "2026-06-13" in warning
 
 
 def test_expired_membership_still_gets_a_full_pin_with_a_warning():
     """The membership never blocks a PIN; the admin is warned instead."""
-    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, "2026-01-01", TZ)
-    assert end.isoformat() == "2026-06-20T09:00:00+01:00"  # full PIN_VALID_DAYS
+    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 12, "2026-01-01", TZ)
+    assert end.isoformat() == "2026-06-13T21:00:00+01:00"  # full PIN_VALID_HOURS
     assert "expired on 2026-01-01" in warning
     assert "beyond the end of the membership" in warning
 
 
 def test_missing_membership_expiry_date_warns():
-    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, None, TZ)
-    assert end.isoformat() == "2026-06-20T09:00:00+01:00"
+    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 12, None, TZ)
+    assert end.isoformat() == "2026-06-13T21:00:00+01:00"
     assert warning == "No membership expiry date found for this member."
 
 
 def test_unreadable_membership_expiry_date_warns():
-    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 7, "31/12/2026", TZ)
-    assert end.isoformat() == "2026-06-20T09:00:00+01:00"
+    end, warning = pin_validity_end(_local(2026, 6, 13, 9), 12, "31/12/2026", TZ)
+    assert end.isoformat() == "2026-06-13T21:00:00+01:00"
     assert "could not be read" in warning
 
 
 def test_pin_validity_end_membership_check_can_be_disabled():
-    # false = ignore the membership entirely: no shortening, no warning
     end, warning = pin_validity_end(
-        _local(2026, 6, 13, 9), 7, "2026-01-01", TZ, check_membership_expiry=False
+        _local(2026, 6, 13, 9), 12, "2026-01-01", TZ, check_membership_expiry=False
     )
-    assert end.isoformat() == "2026-06-20T09:00:00+01:00"
+    assert end.isoformat() == "2026-06-13T21:00:00+01:00"
     assert warning is None
+
+
+def test_pin_never_lasts_long_enough_to_need_activation():
+    """algoPINs over 24 hours must be activated on the lock; ours never are."""
+    from datetime import timedelta
+
+    from src.config import MAX_PIN_VALID_HOURS
+
+    start = _local(2026, 6, 13, 9)
+    end, _ = pin_validity_end(start, MAX_PIN_VALID_HOURS, "2099-12-31", TZ)
+    assert end - start <= timedelta(hours=24)
 
 
 def test_booking_period_from_parsed_times():
@@ -112,21 +116,6 @@ def test_booking_period_falls_back_to_now_when_unparsed():
     )
     start, end = booking_period(booking, NOW, TZ)
     assert start == NOW and end == NOW
-
-
-def test_padlock_pin_covers_period():
-    member = Member(
-        member_id="1", full_name="X", email="x@y",
-        padlock_pin="123456",
-        padlock_pin_valid_from="2026-06-01T00:00:00+01:00",
-        padlock_pin_valid_until="2026-07-01T00:00:00+01:00",
-    )
-    # booking inside the window -> covered
-    assert member.padlock_pin_covers(_local(2026, 6, 13, 9), _local(2026, 6, 13, 10))
-    # booking after the window -> not covered (new PIN needed)
-    assert not member.padlock_pin_covers(_local(2026, 7, 2, 9), _local(2026, 7, 2, 10))
-    # booking before the PIN starts -> not covered
-    assert not member.padlock_pin_covers(_local(2026, 5, 30, 9), _local(2026, 5, 30, 10))
 
 
 def test_find_by_name_duplicate_names_distinct_people():
@@ -163,7 +152,7 @@ def test_dry_run_does_not_persist_placeholder_pin():
     cfg = SimpleNamespace(
         admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
         club_timezone="Europe/Dublin", dry_run=True,
-        pin_valid_days=7, check_membership_expiry=True,
+        pin_valid_hours=12, check_membership_expiry=True,
     )
     gmail = SimpleNamespace(send_email=lambda **kw: None, mark_read=lambda *a, **k: None)
 
@@ -177,56 +166,6 @@ def test_dry_run_does_not_persist_placeholder_pin():
     assert status == "sent_pin"
     stored = conn.execute("SELECT padlock_pin FROM members WHERE member_id='1'").fetchone()
     assert stored["padlock_pin"] is None
-
-
-def test_stored_dry_run_pin_is_replaced_on_real_run():
-    """A DRY-RUN-PIN left in the database must not be emailed to a member."""
-    from datetime import timedelta
-    from types import SimpleNamespace
-
-    from src.handler import DRY_RUN_PIN, process_message
-    from src.member_repo import MemberRepository
-
-    # Placeholder stored with a window wide enough to cover the booking, so only
-    # the placeholder check can stop it being reused.
-    conn = _in_memory_db()
-    conn.execute(
-        """INSERT INTO members (member_id, full_name, email, membership_expires_on,
-                                dedupe_hash, padlock_pin,
-                                padlock_pin_valid_from, padlock_pin_valid_until)
-           VALUES ('1', 'Dave Dennehy', 'dave@example.com', '2099-12-31', 'h', ?, ?, ?)""",
-        (
-            DRY_RUN_PIN,
-            (datetime.now(TZ) - timedelta(days=1)).isoformat(),
-            (datetime.now(TZ) + timedelta(days=365)).isoformat(),
-        ),
-    )
-    conn.commit()
-
-    cfg = SimpleNamespace(
-        admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
-        club_timezone="Europe/Dublin", dry_run=False,
-        pin_valid_days=7, check_membership_expiry=True,
-    )
-    sent = []
-    gmail = SimpleNamespace(
-        send_email=lambda **kw: sent.append(kw), mark_read=lambda *a, **k: None
-    )
-    igloo = SimpleNamespace(
-        create_monthly_algopin=lambda **kw: SimpleNamespace(
-            code="987654321",
-            valid_from=kw["valid_from"],
-            valid_until=kw["valid_until"],
-        )
-    )
-
-    msg = _future_booking_message()
-    status, _, _ = process_message(cfg, gmail, igloo, MemberRepository(conn), msg, conn)
-    assert status == "sent_pin"
-    stored = conn.execute("SELECT padlock_pin FROM members WHERE member_id='1'").fetchone()
-    assert stored["padlock_pin"] == "987654321"
-    assert DRY_RUN_PIN not in sent[-1]["body"]
-    assert "987654321" in sent[-1]["body"]
 
 
 def test_next_variance_cycles():
@@ -254,7 +193,7 @@ def test_algopin_endpoint_selection(monkeypatch, tmp_path):
 
     monkeypatch.setattr(client, "_request", fake_request)
 
-    # PIN_VALID_DAYS is capped at 11, so real runs always take this path.
+    # PIN_VALID_HOURS is capped at 24, so real runs always take this path.
     client.create_monthly_algopin("dev", "Member", NOW, NOW + timedelta(days=7))
     path, payload = calls[-1]
     assert path.endswith("/algopin/hourly")
@@ -420,7 +359,7 @@ def _process_booking_for_member(membership_expires_on, caplog=None):
     cfg = SimpleNamespace(
         admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
         club_timezone="Europe/Dublin", dry_run=False,
-        pin_valid_days=7, check_membership_expiry=True,
+        pin_valid_hours=12, check_membership_expiry=True,
     )
     sent = []
     gmail = SimpleNamespace(
@@ -473,43 +412,23 @@ def test_valid_membership_sends_the_pin_with_no_warning():
     assert [m["to"] for m in sent] == ["dave@example.com"]
 
 
-def test_stored_pin_membership_warning_cases():
-    from src.handler import stored_pin_membership_warning
-
-    window = (_local(2026, 6, 13, 9), _local(2026, 6, 20, 9))
-
-    # membership outlasts the reused PIN -> nothing to say
-    assert stored_pin_membership_warning(*window, "2026-07-31", TZ) is None
-    # membership ends inside the window: the PIN can't be shortened now
-    assert "before the reused PIN stops working" in stored_pin_membership_warning(
-        *window, "2026-06-17", TZ
-    )
-    # lapsed since the PIN was issued
-    assert "runs beyond the end of the membership" in stored_pin_membership_warning(
-        *window, "2026-01-01", TZ
-    )
-    assert stored_pin_membership_warning(*window, None, TZ).startswith("No membership")
-    # the flag still switches the whole check off
-    assert stored_pin_membership_warning(
-        *window, "2026-01-01", TZ, check_membership_expiry=False
-    ) is None
 
 
-def test_reused_pin_for_lapsed_member_warns_without_calling_igloohome():
+def test_a_new_pin_is_generated_even_when_a_valid_one_is_stored():
+    """Every booking gets its own PIN: no reuse, so none can outlive its booking."""
     from datetime import timedelta
     from types import SimpleNamespace
 
     from src.handler import process_message
     from src.member_repo import MemberRepository
 
-    # a PIN issued while the membership was valid, still covering the booking
     conn = _in_memory_db()
     conn.execute(
         """INSERT INTO members (member_id, full_name, email, membership_expires_on,
                                 dedupe_hash, padlock_pin,
                                 padlock_pin_valid_from, padlock_pin_valid_until)
-           VALUES ('1', 'Dave Dennehy', 'dave@example.com', '2026-01-01', 'h',
-                   '111222333', ?, ?)""",
+           VALUES ('1', 'Dave Dennehy', 'dave@example.com', '2099-12-31', 'h',
+                   '111111111', ?, ?)""",
         (
             (datetime.now(TZ) - timedelta(days=1)).isoformat(),
             (datetime.now(TZ) + timedelta(days=365)).isoformat(),
@@ -519,19 +438,26 @@ def test_reused_pin_for_lapsed_member_warns_without_calling_igloohome():
     cfg = SimpleNamespace(
         admin_email="admin@x", fuzzy_name_threshold=90, lock_id="DEV1",
         club_timezone="Europe/Dublin", dry_run=False,
-        pin_valid_days=7, check_membership_expiry=True,
+        pin_valid_hours=12, check_membership_expiry=True,
     )
-    sent = []
+    sent, calls = [], []
     gmail = SimpleNamespace(
         send_email=lambda **kw: sent.append(kw), mark_read=lambda *a, **k: None
     )
-
-    status, _, _ = process_message(
-        cfg, gmail, _igloo_must_not_be_called(), MemberRepository(conn),
-        _future_booking_message(), conn,
+    igloo = SimpleNamespace(
+        create_monthly_algopin=lambda **kw: calls.append(kw) or SimpleNamespace(
+            code="222222222", valid_from=kw["valid_from"], valid_until=kw["valid_until"]
+        )
     )
 
-    assert status == "sent_pin_membership_warning"
-    assert [m["to"] for m in sent] == ["dave@example.com", "admin@x"]
-    assert "111222333" in sent[0]["body"]  # the member still gets the stored PIN
-    assert "expired on 2026-01-01" in sent[1]["body"]
+    status, _, _ = process_message(
+        cfg, gmail, igloo, MemberRepository(conn), _future_booking_message(), conn
+    )
+
+    assert status == "sent_pin"
+    assert len(calls) == 1  # igloohome was called despite the stored PIN
+    assert "222222222" in sent[0]["body"] and "111111111" not in sent[0]["body"]
+    stored = conn.execute("SELECT padlock_pin FROM members WHERE member_id='1'").fetchone()
+    assert stored["padlock_pin"] == "222222222"  # replaced, kept for the audit trail
+    # the window stays inside the no-activation limit
+    assert calls[0]["valid_until"] - calls[0]["valid_from"] <= timedelta(hours=12)
