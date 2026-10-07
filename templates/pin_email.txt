@@ -3,7 +3,6 @@ Hi {first_name},
 Your ball machine padlock PIN is:
 
 {pin}
-NOTE: This PIN must be used within 24 hours of generation, so that it gets activated, and it will stay active for the booking time.
 
 Please do not share this PIN. It is assigned to your membership account.
 
